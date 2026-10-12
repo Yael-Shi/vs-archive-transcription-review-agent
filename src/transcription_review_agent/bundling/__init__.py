@@ -1,5 +1,9 @@
-"""Local bundle contracts."""
+"""Local bundle contracts and source acquisition."""
 
+from transcription_review_agent.bundling.acquire import (
+    BundleResult,
+    bundle_selected_batch,
+)
 from transcription_review_agent.bundling.manifest import (
     BatchManifest,
     DocumentBundleManifest,
@@ -13,7 +17,9 @@ from transcription_review_agent.bundling.verify import (
 
 __all__ = [
     "BatchManifest",
+    "BundleResult",
     "DocumentBundleManifest",
+    "bundle_selected_batch",
     "publish_batch_manifest",
     "publish_document_manifest",
     "verify_batch_bundle",
