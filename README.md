@@ -30,7 +30,7 @@ One run targets five `REVIEWABLE` documents. Documents are atomic. Scan order is
 
 Discovery exhaustion with 1–4 reviewable documents is a valid short batch. Exhaustion with zero reviewable documents is a no-work result: the cursor is kept, no batch id is allocated, and no batch manifest is written. PDFs stay the original PDF bytes from the API. Rasterization is later.
 
-The controller loop is not implemented. `review-next` exits before reading configuration or opening a socket.
+The controller loop is not implemented. `review-next` exits before reading configuration or opening a socket. The read-only HTTP client can scan and fetch a review bundle; it does not download presigned source URLs.
 
 ## Controller state
 
@@ -128,6 +128,25 @@ Set these in the process environment. No dotenv file is read.
 | `TRANSCRIPTION_REVIEW_SCAN_PAGE_LIMIT` | no | `50` (1–200) |
 | `TRANSCRIPTION_REVIEW_REQUEST_TIMEOUT_SECONDS` | no | `30` |
 
+## Read-only HTTP client
+
+`TranscriptionReviewApiClient` is constructed from the API origin and a request timeout. It keeps one `httpx` session. Every request is a GET built from that origin plus a fixed path: scan uses `/api/agent/v1/transcription-review/documents/scan`, and a review bundle uses `bundle_path(document_id)`. Callers cannot pass a request URL. Redirects are not followed. One method call sends one request. There is no retry policy yet.
+
+`scan(after_id, limit)` sends `after_id=0` when the local cursor is `None`. Any other cursor and `limit` are sent unchanged.
+
+| Call | HTTP | Result |
+|---|---|---|
+| scan | 200 | `ScanResponse` when the echoed `after_id` and `limit` match the request. A mismatch raises `ApiProtocolError` |
+| scan | 400 with `invalid_after_id` or `invalid_limit` | `ScanQueryError` carrying that body |
+| scan | any other status | `UnexpectedApiResponseError` (not an empty or exhausted page) |
+| review bundle | 200 | `ReviewBundleResponse` when `document.document_id` matches the requested id. A mismatch raises `ApiProtocolError`. `REVIEWABLE`, `NON_ELIGIBLE`, and `BLOCKING_INTEGRITY_ERROR` stay on the payload |
+| review bundle | 404 | `ReviewBundleNotFound` (`NOT_FOUND`). The body is ignored |
+| review bundle | any other status | `UnexpectedApiResponseError` |
+
+Timeouts raise `ApiTimeoutError`. Connection and other network failures raise `ApiTransportError`. Invalid JSON raises `ApiInvalidJsonError`. A schema-invalid HTTP 200, or a schema-invalid HTTP 400 scan body, raises `ApiSchemaError`. A schema-valid HTTP 200 whose echoed scan cursor, scan limit, or bundle document id does not match the request raises `ApiProtocolError`. Exception text includes the method, path, and status when a response exists. It does not include response bodies, secrets, or presigned URLs.
+
+The client does not download source files and does not write `state/` or `outputs/`.
+
 ## This milestone
 
-Schemas, cursor rules, state transitions, ledger replay, bundle manifests, and tests are in place. The scan/download/seal loop is not. `review-next` is reserved and exits with status 2.
+Schemas, cursor rules, state transitions, ledger replay, bundle manifests, and the read-only scan/bundle client are in place. Source download, controller writes, and the scan/seal loop are not. No AI provider is wired in. `review-next` is reserved and exits with status 2 before reading configuration or opening a socket.
