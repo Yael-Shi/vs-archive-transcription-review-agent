@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.env
+.env.*
+*.tmp
+
+# Runtime checkpoint, ledger, and generated bundles.
+/state/
+/outputs/
