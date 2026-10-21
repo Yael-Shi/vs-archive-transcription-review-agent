@@ -1,6 +1,8 @@
 """Pilot 01 constants shared by schemas, state, and bundle layout."""
 
 PILOT_TARGET_REVIEWABLE_COUNT = 5
+MIN_BATCH_SIZE = 1
+MAX_BATCH_SIZE = 200
 
 SCAN_SCHEMA_VERSION = "transcription-review-scan-v1"
 BUNDLE_SCHEMA_VERSION = "transcription-review-bundle-v1"

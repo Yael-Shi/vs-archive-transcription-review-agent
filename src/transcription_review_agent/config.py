@@ -15,8 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from transcription_review_agent.constants import (
     DEFAULT_SCAN_LIMIT,
+    MAX_BATCH_SIZE,
     MAX_SCAN_LIMIT,
+    MIN_BATCH_SIZE,
     MIN_SCAN_LIMIT,
+    PILOT_TARGET_REVIEWABLE_COUNT,
 )
 from transcription_review_agent.errors import ConfigError
 
@@ -24,6 +27,7 @@ API_BASE_URL_ENV = "TRANSCRIPTION_REVIEW_API_BASE_URL"
 STATE_DIR_ENV = "TRANSCRIPTION_REVIEW_STATE_DIR"
 BATCHES_DIR_ENV = "TRANSCRIPTION_REVIEW_BATCHES_DIR"
 SCAN_PAGE_LIMIT_ENV = "TRANSCRIPTION_REVIEW_SCAN_PAGE_LIMIT"
+BATCH_SIZE_ENV = "TRANSCRIPTION_REVIEW_BATCH_SIZE"
 REQUEST_TIMEOUT_ENV = "TRANSCRIPTION_REVIEW_REQUEST_TIMEOUT_SECONDS"
 
 # The main Django checkout. This agent must not write inside it.
@@ -40,6 +44,11 @@ class AgentConfig(BaseModel):
         default=DEFAULT_SCAN_LIMIT,
         ge=MIN_SCAN_LIMIT,
         le=MAX_SCAN_LIMIT,
+    )
+    batch_size: int = Field(
+        default=PILOT_TARGET_REVIEWABLE_COUNT,
+        ge=MIN_BATCH_SIZE,
+        le=MAX_BATCH_SIZE,
     )
     state_dir: Path
     batches_dir: Path
@@ -115,6 +124,10 @@ def load_config(
             env.get(SCAN_PAGE_LIMIT_ENV, str(DEFAULT_SCAN_LIMIT)),
             SCAN_PAGE_LIMIT_ENV,
         )
+        batch_size = _parse_int(
+            env.get(BATCH_SIZE_ENV, str(PILOT_TARGET_REVIEWABLE_COUNT)),
+            BATCH_SIZE_ENV,
+        )
         timeout = _parse_float(
             env.get(REQUEST_TIMEOUT_ENV, "30"),
             REQUEST_TIMEOUT_ENV,
@@ -122,6 +135,7 @@ def load_config(
         return AgentConfig(
             api_base_url=base_url,
             scan_page_limit=scan_page_limit,
+            batch_size=batch_size,
             state_dir=state_dir,
             batches_dir=batches_dir,
             request_timeout_seconds=timeout,

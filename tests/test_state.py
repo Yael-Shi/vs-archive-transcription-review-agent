@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from transcription_review_agent.api_client.schemas import BlockingIntegrityCode, NonEligibleCode
@@ -9,6 +11,7 @@ from transcription_review_agent.state.schema import (
     DocumentPhase,
     initial_state,
 )
+from transcription_review_agent.state.store import StateStore
 from transcription_review_agent.state.transitions import (
     apply_ledger_entry,
     begin_bundling,
@@ -16,6 +19,7 @@ from transcription_review_agent.state.transitions import (
     note_no_work,
     note_non_eligible,
     note_not_found,
+    replay_ledger,
     seal_batch,
     select_reviewable,
 )
@@ -497,3 +501,214 @@ def test_resolving_a_block_after_a_sealed_batch_keeps_last_sealed_batch_id() -> 
     assert selected.last_scanned_document_id == 9
     assert selected.blocked is None
     assert selected.last_sealed_batch_id == "batch-000001"
+
+
+def test_omitted_target_keeps_the_historical_default_of_five() -> None:
+    planned = select_reviewable(
+        initial_state(),
+        document_id=4,
+        archive_item_id=40,
+        language="en",
+        occurred_at=at(1),
+    )
+    assert planned.target_reviewable_count is None
+    state = apply_ledger_entry(initial_state(), planned)
+    assert state.batch_target_count == 5
+
+
+def test_open_batch_keeps_its_target_when_a_later_selection_names_another_size() -> None:
+    opened = apply_ledger_entry(
+        initial_state(),
+        select_reviewable(
+            initial_state(),
+            document_id=1,
+            archive_item_id=10,
+            language="en",
+            occurred_at=at(1),
+            target_reviewable_count=5,
+        ),
+    )
+    planned = select_reviewable(
+        opened,
+        document_id=2,
+        archive_item_id=20,
+        language="fr",
+        occurred_at=at(2),
+        target_reviewable_count=2,
+    )
+    assert planned.target_reviewable_count is None
+    state = apply_ledger_entry(opened, planned)
+    assert state.batch_target_count == 5
+    assert state.current_batch_document_ids == [1, 2]
+    conflicting = planned.model_copy(update={"target_reviewable_count": 2})
+    with pytest.raises(StateInvariantError, match="recorded at allocation"):
+        apply_ledger_entry(opened, conflicting)
+
+
+def test_recorded_target_of_two_bundles_without_waiting_for_five() -> None:
+    state = initial_state()
+    for document_id in (3, 8):
+        state = apply_ledger_entry(
+            state,
+            select_reviewable(
+                state,
+                document_id=document_id,
+                archive_item_id=100 + document_id,
+                language="en",
+                occurred_at=at(document_id),
+                target_reviewable_count=2 if document_id == 3 else None,
+            ),
+        )
+    assert state.batch_target_count == 2
+    bundling = apply_ledger_entry(state, begin_bundling(state, occurred_at=at(9)))
+    assert bundling.batch_status is BatchStatus.BUNDLING
+    assert bundling.discovery_exhausted is False
+    with pytest.raises(StateInvariantError, match="target number"):
+        apply_ledger_entry(
+            state,
+            select_reviewable(
+                state,
+                document_id=9,
+                archive_item_id=90,
+                language="en",
+                occurred_at=at(10),
+                target_reviewable_count=5,
+            ),
+        )
+
+
+def test_blocked_resolution_keeps_the_allocated_target(tmp_path: Path) -> None:
+    opened = apply_ledger_entry(
+        initial_state(),
+        select_reviewable(
+            initial_state(),
+            document_id=1,
+            archive_item_id=10,
+            language="en",
+            occurred_at=at(1),
+            target_reviewable_count=2,
+        ),
+    )
+    blocked = _block(opened, 4, at_seconds=2)
+    assert blocked.batch_target_count == 2
+    planned = select_reviewable(
+        blocked,
+        document_id=4,
+        archive_item_id=40,
+        language="fr",
+        occurred_at=at(3),
+        target_reviewable_count=8,
+    )
+    assert planned.target_reviewable_count is None
+    joined = apply_ledger_entry(blocked, planned)
+    assert joined.batch_target_count == 2
+    assert joined.current_batch_document_ids == [1, 4]
+    assert joined.batch_status is BatchStatus.ACCUMULATING
+    assert joined.blocked is None
+    conflicting = planned.model_copy(update={"target_reviewable_count": 5})
+    with pytest.raises(StateInvariantError, match="recorded at allocation"):
+        apply_ledger_entry(blocked, conflicting)
+    assert blocked.batch_target_count == 2
+
+    replayed = replay_ledger([
+        select_reviewable(
+            initial_state(),
+            document_id=1,
+            archive_item_id=10,
+            language="en",
+            occurred_at=at(1),
+            target_reviewable_count=2,
+        ),
+        note_blocking(
+            opened,
+            document_id=4,
+            code=BlockingIntegrityCode.MISSING_PRIMARY_SOURCE,
+            message="Document.file_s3_key is missing",
+            details={"order_index": 0},
+            occurred_at=at(2),
+        ),
+        planned,
+    ])
+    assert replayed == joined
+
+    store = StateStore(tmp_path / "state")
+    for entry in (
+        select_reviewable(
+            initial_state(),
+            document_id=1,
+            archive_item_id=10,
+            language="en",
+            occurred_at=at(1),
+            target_reviewable_count=2,
+        ),
+        note_blocking(
+            opened,
+            document_id=4,
+            code=BlockingIntegrityCode.MISSING_PRIMARY_SOURCE,
+            message="Document.file_s3_key is missing",
+            details={"order_index": 0},
+            occurred_at=at(2),
+        ),
+        planned,
+    ):
+        assert entry is not None
+        store.commit(entry)
+    store.checkpoint_path.unlink()
+    assert store.load() == joined
+
+
+def test_first_selection_after_a_pre_batch_block_captures_the_configured_target(
+    tmp_path: Path,
+) -> None:
+    blocked = _block(initial_state(), 3, at_seconds=1)
+    assert blocked.current_batch_id is None
+    planned = select_reviewable(
+        blocked,
+        document_id=3,
+        archive_item_id=30,
+        language="en",
+        occurred_at=at(2),
+        target_reviewable_count=3,
+    )
+    assert planned.target_reviewable_count == 3
+    selected = apply_ledger_entry(blocked, planned)
+    assert selected.batch_target_count == 3
+    assert selected.current_batch_id == "batch-000001"
+    assert selected.current_batch_document_ids == [3]
+
+    legacy = select_reviewable(
+        blocked,
+        document_id=3,
+        archive_item_id=30,
+        language="en",
+        occurred_at=at(2),
+    )
+    assert apply_ledger_entry(blocked, legacy).batch_target_count == 5
+    assert replay_ledger(
+        [
+            note_blocking(
+                initial_state(),
+                document_id=3,
+                code=BlockingIntegrityCode.MISSING_PRIMARY_SOURCE,
+                message="Document.file_s3_key is missing",
+                details={"order_index": 0},
+                occurred_at=at(1),
+            ),
+            planned,
+        ]
+    ) == selected
+
+    store = StateStore(tmp_path / "state")
+    block = note_blocking(
+        initial_state(),
+        document_id=3,
+        code=BlockingIntegrityCode.MISSING_PRIMARY_SOURCE,
+        message="Document.file_s3_key is missing",
+        details={"order_index": 0},
+        occurred_at=at(1),
+    )
+    assert block is not None
+    store.commit(block)
+    store.commit(planned)
+    store.checkpoint_path.unlink()
+    assert store.load().batch_target_count == 3

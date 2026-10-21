@@ -17,6 +17,8 @@ from transcription_review_agent.api_client.schemas import BlockingIntegrityCode
 from transcription_review_agent.bundling.layout import assert_safe_relative_path
 from transcription_review_agent.constants import (
     BATCH_ID_PATTERN,
+    MAX_BATCH_SIZE,
+    MIN_BATCH_SIZE,
     PILOT_TARGET_REVIEWABLE_COUNT,
     SHA256_PATTERN,
     STATE_SCHEMA_VERSION,
@@ -117,6 +119,13 @@ class ControllerState(BaseModel):
     last_scanned_document_id: int | None = Field(default=None, ge=1)
     last_sealed_batch_id: BatchId | None = None
     current_batch_id: BatchId | None = None
+    # Captured when the batch is allocated. Checkpoints written before this
+    # field existed load as 5. A later configuration change does not resize it.
+    batch_target_count: int = Field(
+        default=PILOT_TARGET_REVIEWABLE_COUNT,
+        ge=MIN_BATCH_SIZE,
+        le=MAX_BATCH_SIZE,
+    )
     current_batch_document_ids: list[int] = Field(default_factory=list)
     batch_status: BatchStatus = BatchStatus.IDLE
     discovery_exhausted: bool = False
@@ -169,7 +178,7 @@ def validate_controller_state(state: ControllerState) -> None:
         if len(state.documents) < 1:
             raise StateInvariantError("bundling requires at least one document")
         if (
-            len(state.documents) != PILOT_TARGET_REVIEWABLE_COUNT
+            len(state.documents) != state.batch_target_count
             and not state.discovery_exhausted
         ):
             raise StateInvariantError(
@@ -194,8 +203,10 @@ def _validate_document_list(state: ControllerState) -> None:
         )
     if ids != sorted(ids) or len(ids) != len(set(ids)):
         raise StateInvariantError("batch document ids must be strictly increasing")
-    if len(ids) > PILOT_TARGET_REVIEWABLE_COUNT:
-        raise StateInvariantError("a batch cannot contain more than 5 documents")
+    if len(ids) > state.batch_target_count:
+        raise StateInvariantError(
+            "a batch cannot contain more documents than its target"
+        )
     for document in state.documents:
         _validate_document_phase(document)
     if state.documents and state.last_scanned_document_id is None:
@@ -329,11 +340,11 @@ def _require_sealed(state: ControllerState) -> None:
     count = len(state.documents)
     if count < 1:
         raise StateInvariantError("a sealed batch contains at least one document")
-    if count < PILOT_TARGET_REVIEWABLE_COUNT:
+    if count < state.batch_target_count:
         if not state.discovery_exhausted:
             raise StateInvariantError("a short sealed batch requires exhausted discovery")
-    elif count != PILOT_TARGET_REVIEWABLE_COUNT:
-        raise StateInvariantError("a sealed batch has at most 5 documents")
+    elif count != state.batch_target_count:
+        raise StateInvariantError("a sealed batch cannot exceed its target")
 
 
 def _validate_bundle_pipeline(documents: list[DocumentLifecycle]) -> None:

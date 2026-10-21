@@ -48,7 +48,6 @@ from transcription_review_agent.bundling.manifest import (
 )
 from transcription_review_agent.bundling.verify import verify_document_bundle
 from transcription_review_agent.config import AgentConfig
-from transcription_review_agent.constants import PILOT_TARGET_REVIEWABLE_COUNT
 from transcription_review_agent.errors import (
     BundleConflictError,
     FreshBundleRejectedError,
@@ -622,9 +621,10 @@ def _can_bundle(state: ControllerState) -> bool:
     if state.batch_status is not BatchStatus.ACCUMULATING:
         return False
     count = len(state.documents)
-    if count == PILOT_TARGET_REVIEWABLE_COUNT:
+    target = state.batch_target_count
+    if count == target:
         return True
-    return 1 <= count < PILOT_TARGET_REVIEWABLE_COUNT and state.discovery_exhausted
+    return 1 <= count < target and state.discovery_exhausted
 
 
 def _result(state: ControllerState, *, completed: bool) -> BundleResult:

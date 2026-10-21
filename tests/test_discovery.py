@@ -291,10 +291,11 @@ def _classified_body(
     }
 
 
-def _config(tmp_path: Path, *, limit: int = 50) -> AgentConfig:
+def _config(tmp_path: Path, *, limit: int = 50, batch_size: int = 5) -> AgentConfig:
     return AgentConfig(
         api_base_url=BASE_URL,
         scan_page_limit=limit,
+        batch_size=batch_size,
         state_dir=tmp_path / "state",
         batches_dir=tmp_path / "batches",
         request_timeout_seconds=5,
@@ -316,10 +317,11 @@ def _run(
     script: ApiScript,
     *,
     limit: int | None = None,
+    batch_size: int = 5,
     store: StateStore | None = None,
 ) -> tuple[DiscoveryResult, StateStore, ApiScript]:
     page_limit = script.limit if limit is None else limit
-    config = _config(tmp_path, limit=page_limit)
+    config = _config(tmp_path, limit=page_limit, batch_size=batch_size)
     state_store = store if store is not None else StateStore(config.state_dir)
     result = discover_next_batch(
         config,
@@ -1137,6 +1139,174 @@ def test_exhausted_open_batch_is_left_unchanged(tmp_path: Path) -> None:
     assert (
         config.state_dir / "controller_state.json"
     ).read_bytes() == before_checkpoint
+
+
+def test_configured_batch_size_stops_before_the_historical_five(tmp_path: Path) -> None:
+    ids = [1, 2, 3, 4]
+    script = ApiScript(
+        pages={0: ids},
+        bundles={document_id: [BundlePlan("reviewable")] for document_id in ids},
+    )
+    result, store, script = _run(tmp_path, script, batch_size=2)
+    state = store.load()
+    entries = store.read_ledger()
+
+    assert result.selected_document_ids == (1, 2)
+    assert result.discovery_exhausted is False
+    assert state.batch_target_count == 2
+    assert entries[0].target_reviewable_count == 2
+    assert entries[1].target_reviewable_count is None
+    assert _bundle_ids(script.requests) == [1, 2]
+
+
+def test_batch_size_of_one_selects_a_single_french_document(tmp_path: Path) -> None:
+    script = ApiScript(
+        pages={0: [4]},
+        bundles={4: [BundlePlan("reviewable", language="fr")]},
+    )
+    result, store, _script = _run(tmp_path, script, batch_size=1)
+    state = store.load()
+
+    assert result.selected_document_ids == (4,)
+    assert result.discovery_exhausted is False
+    assert state.batch_target_count == 1
+    assert state.documents[0].language == "fr"
+
+
+def test_shrinking_batch_size_does_not_close_an_open_batch(tmp_path: Path) -> None:
+    config = _config(tmp_path, batch_size=2)
+    store = StateStore(config.state_dir)
+    store.commit(
+        select_reviewable(
+            initial_state(),
+            document_id=1,
+            archive_item_id=10,
+            language="en",
+            occurred_at=at(1),
+            target_reviewable_count=5,
+        )
+    )
+    ids = [2, 3, 4, 5, 6]
+    script = ApiScript(
+        pages={1: ids},
+        bundles={document_id: [BundlePlan("reviewable")] for document_id in ids},
+    )
+    result = discover_next_batch(config, script.client(), store, clock=_clock())
+    state = store.load()
+
+    assert result.selected_document_ids == (1, 2, 3, 4, 5)
+    assert state.batch_target_count == 5
+    assert _bundle_ids(script.requests) == [2, 3, 4, 5]
+    joined = [
+        entry
+        for entry in store.read_ledger()
+        if entry.event_type == "document_selected" and entry.document_id != 1
+    ]
+    assert [entry.target_reviewable_count for entry in joined] == [None, None, None, None]
+
+
+def test_growing_batch_size_does_not_extend_a_full_batch(tmp_path: Path) -> None:
+    config = _config(tmp_path, batch_size=5)
+    store = StateStore(config.state_dir)
+    state = initial_state()
+    for document_id in (1, 2):
+        state = store.commit(
+            select_reviewable(
+                state,
+                document_id=document_id,
+                archive_item_id=100 + document_id,
+                language="en",
+                occurred_at=at(document_id),
+                target_reviewable_count=2 if document_id == 1 else None,
+            )
+        )
+    assert state.batch_target_count == 2
+    script = ApiScript(
+        pages={2: [3, 4]},
+        bundles={3: [BundlePlan("reviewable")], 4: [BundlePlan("reviewable")]},
+    )
+    before = store.ledger_path.read_bytes()
+    result = discover_next_batch(config, script.client(), store, clock=_clock())
+
+    assert result.selected_document_ids == (1, 2)
+    assert script.requests == []
+    assert store.ledger_path.read_bytes() == before
+    assert store.load().batch_target_count == 2
+
+
+def test_blocked_open_batch_keeps_its_target_when_batch_size_changes(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, batch_size=8)
+    store = StateStore(config.state_dir)
+    opened = store.commit(
+        select_reviewable(
+            initial_state(),
+            document_id=1,
+            archive_item_id=10,
+            language="en",
+            occurred_at=at(1),
+            target_reviewable_count=2,
+        )
+    )
+    blocked = note_blocking(
+        opened,
+        document_id=4,
+        code=BlockingIntegrityCode.MISSING_SOURCE_FILE,
+        message="missing",
+        occurred_at=at(2),
+    )
+    assert blocked is not None
+    store.commit(blocked)
+    script = ApiScript(
+        pages={4: [5, 6]},
+        bundles={
+            4: [BundlePlan("reviewable", archive_item_id=40)],
+            5: [BundlePlan("reviewable")],
+            6: [BundlePlan("reviewable")],
+        },
+    )
+    result = discover_next_batch(config, script.client(), store, clock=_clock())
+    state = store.load()
+
+    assert result.selected_document_ids == (1, 4)
+    assert state.batch_target_count == 2
+    assert _bundle_ids(script.requests) == [4]
+    resolution = store.read_ledger()[-1]
+    assert resolution.event_type == "document_selected"
+    assert resolution.target_reviewable_count is None
+    store.checkpoint_path.unlink()
+    assert store.load().batch_target_count == 2
+
+
+def test_pre_batch_block_resolution_uses_the_current_batch_size(tmp_path: Path) -> None:
+    config = _config(tmp_path, batch_size=3)
+    store = StateStore(config.state_dir)
+    blocked = note_blocking(
+        initial_state(),
+        document_id=2,
+        code=BlockingIntegrityCode.MISSING_SOURCE_FILE,
+        message="missing",
+        occurred_at=at(1),
+    )
+    assert blocked is not None
+    store.commit(blocked)
+    script = ApiScript(
+        pages={2: []},
+        bundles={2: [BundlePlan("reviewable", language="fr")]},
+    )
+    result = discover_next_batch(config, script.client(), store, clock=_clock())
+    state = store.load()
+
+    assert result.selected_document_ids == (2,)
+    assert state.batch_target_count == 3
+    assert state.discovery_exhausted is True
+    assert state.documents[0].language == "fr"
+    selection = store.read_ledger()[-2]
+    assert selection.event_type == "document_selected"
+    assert selection.target_reviewable_count == 3
+    store.checkpoint_path.unlink()
+    assert store.load() == state
 
 
 def test_review_next_remains_unimplemented() -> None:

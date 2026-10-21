@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,6 +20,8 @@ from transcription_review_agent.constants import (
     BUNDLE_SCHEMA_VERSION,
     LOCAL_BATCH_SCHEMA_VERSION,
     LOCAL_DOCUMENT_BUNDLE_SCHEMA_VERSION,
+    MAX_BATCH_SIZE,
+    MIN_BATCH_SIZE,
     PILOT_TARGET_REVIEWABLE_COUNT,
     SHA256_PATTERN,
 )
@@ -200,14 +203,18 @@ class BatchDocumentRef(BaseModel):
 
 
 class BatchManifest(BaseModel):
-    """Sealed batch of up to five document bundles."""
+    """Sealed batch of document bundles. The target is the size captured at allocation."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["local-batch-v1"] = LOCAL_BATCH_SCHEMA_VERSION
     batch_id: BatchId
     sealed: Literal[True] = True
-    target_reviewable_count: Literal[5] = PILOT_TARGET_REVIEWABLE_COUNT
+    target_reviewable_count: int = Field(
+        default=PILOT_TARGET_REVIEWABLE_COUNT,
+        ge=MIN_BATCH_SIZE,
+        le=MAX_BATCH_SIZE,
+    )
     document_ids: list[int]
     short_batch: bool
     discovery_exhausted: bool
@@ -217,12 +224,13 @@ class BatchManifest(BaseModel):
     @model_validator(mode="after")
     def _batch_shape(self) -> BatchManifest:
         ids = self.document_ids
+        target = self.target_reviewable_count
         if ids != sorted(ids) or len(ids) != len(set(ids)):
             raise ValueError("batch document ids must be strictly increasing")
         if any(document_id < 1 for document_id in ids):
             raise ValueError("document ids must be positive")
-        if len(ids) > PILOT_TARGET_REVIEWABLE_COUNT:
-            raise ValueError("a batch cannot contain more than 5 documents")
+        if len(ids) > target:
+            raise ValueError("a batch cannot contain more documents than its target")
         ref_ids = [ref.document_id for ref in self.documents]
         if ref_ids != ids:
             raise ValueError("batch document refs must follow document_ids")
@@ -231,12 +239,12 @@ class BatchManifest(BaseModel):
             if ref.manifest_relative_path != expected:
                 raise ValueError("document manifest path does not match the layout")
         if self.short_batch:
-            if not 1 <= len(ids) < PILOT_TARGET_REVIEWABLE_COUNT or not self.discovery_exhausted:
+            if not ids or len(ids) >= target or not self.discovery_exhausted:
                 raise ValueError(
-                    "a short batch has 1 to 4 documents and exhausted discovery"
+                    "a short batch is smaller than its target and discovery is exhausted"
                 )
-        elif len(ids) != PILOT_TARGET_REVIEWABLE_COUNT:
-            raise ValueError("a full batch has exactly 5 documents")
+        elif len(ids) != target:
+            raise ValueError("a full batch contains its target number of documents")
         return self
 
 

@@ -158,6 +158,44 @@ def test_full_batch_manifest_requires_five_documents() -> None:
         )
 
 
+def test_full_batch_manifest_uses_its_recorded_target() -> None:
+    refs = [
+        BatchDocumentRef(
+            document_id=document_id,
+            manifest_relative_path=f"documents/{document_id}/document_manifest.json",
+            manifest_sha256="ab" * 32,
+        )
+        for document_id in (1, 2)
+    ]
+    manifest = BatchManifest(
+        batch_id="batch-000001",
+        target_reviewable_count=2,
+        document_ids=[1, 2],
+        short_batch=False,
+        discovery_exhausted=False,
+        created_at=NOW,
+        documents=refs,
+    )
+    assert manifest.target_reviewable_count == 2
+    with pytest.raises(ValueError):
+        BatchManifest(
+            batch_id="batch-000001",
+            target_reviewable_count=2,
+            document_ids=[1, 2, 3],
+            short_batch=False,
+            discovery_exhausted=False,
+            created_at=NOW,
+            documents=[
+                *refs,
+                BatchDocumentRef(
+                    document_id=3,
+                    manifest_relative_path="documents/3/document_manifest.json",
+                    manifest_sha256="ab" * 32,
+                ),
+            ],
+        )
+
+
 def test_empty_batch_manifest_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "batch_manifest.json"
     with pytest.raises(ValueError):
