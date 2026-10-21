@@ -235,3 +235,30 @@ def test_crash_before_retry_outcome_keeps_the_blocked_checkpoint(tmp_path: Path)
     assert loaded.blocked.document_id == 3
     assert loaded.current_batch_id is None
     assert loaded.last_scanned_document_id is None
+
+
+def test_legacy_checkpoint_without_batch_target_replays_as_five(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state")
+    store.commit(
+        select_reviewable(
+            initial_state(),
+            document_id=8,
+            archive_item_id=80,
+            language="fr",
+            occurred_at=at(1),
+        )
+    )
+    line = json.loads(store.ledger_path.read_text(encoding="utf-8"))
+    del line["target_reviewable_count"]
+    store.ledger_path.write_text(
+        json.dumps(line, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    checkpoint = json.loads(store.checkpoint_path.read_text(encoding="utf-8"))
+    del checkpoint["batch_target_count"]
+    store.checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    loaded = store.load()
+    assert loaded.batch_target_count == 5
+    assert loaded.current_batch_document_ids == [8]
+    assert loaded.batch_status is BatchStatus.ACCUMULATING

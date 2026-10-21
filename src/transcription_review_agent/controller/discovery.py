@@ -25,10 +25,7 @@ from transcription_review_agent.api_client.schemas import (
     ReviewBundleResponse,
 )
 from transcription_review_agent.config import AgentConfig
-from transcription_review_agent.constants import (
-    PILOT_TARGET_REVIEWABLE_COUNT,
-    SCAN_PATH,
-)
+from transcription_review_agent.constants import SCAN_PATH
 from transcription_review_agent.errors import StateInvariantError
 from transcription_review_agent.state.schema import BatchStatus, ControllerState
 from transcription_review_agent.state.store import StateStore
@@ -81,6 +78,7 @@ def discover_next_batch(
             api_client=api_client,
             state_store=state_store,
             now=now,
+            batch_size=config.batch_size,
         )
         if still_blocked or _batch_is_full(state):
             return _result(state)
@@ -121,6 +119,7 @@ def _scan_forward(
                 api_client=api_client,
                 state_store=state_store,
                 now=now,
+                batch_size=config.batch_size,
             )
             if stop or _batch_is_full(state):
                 return _result(state)
@@ -142,6 +141,7 @@ def _revisit_blocked_document(
     api_client: TranscriptionReviewApiClient,
     state_store: StateStore,
     now: Clock,
+    batch_size: int,
 ) -> tuple[ControllerState, bool]:
     """Re-fetch only the blocked document. Does not scan past it."""
 
@@ -154,6 +154,7 @@ def _revisit_blocked_document(
         api_client=api_client,
         state_store=state_store,
         now=now,
+        batch_size=batch_size,
     )
     return updated, stop
 
@@ -165,6 +166,7 @@ def _visit_document(
     api_client: TranscriptionReviewApiClient,
     state_store: StateStore,
     now: Clock,
+    batch_size: int,
 ) -> tuple[ControllerState, bool]:
     """Commit one existing transition. The second value is true when the run stops."""
 
@@ -190,6 +192,7 @@ def _visit_document(
             archive_item_id=archive_item_id,
             language=language,
             occurred_at=now(),
+            target_reviewable_count=batch_size,
         )
         return state_store.commit(entry), False
 
@@ -267,7 +270,7 @@ def _require_error(bundle: ReviewBundleResponse) -> ApiError:
 def _batch_is_full(state: ControllerState) -> bool:
     return (
         state.batch_status is BatchStatus.ACCUMULATING
-        and len(state.documents) >= PILOT_TARGET_REVIEWABLE_COUNT
+        and len(state.documents) >= state.batch_target_count
     )
 
 

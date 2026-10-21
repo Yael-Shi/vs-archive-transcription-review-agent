@@ -17,7 +17,12 @@ from transcription_review_agent.api_client.schemas import (
     NonEligibleCode,
 )
 from transcription_review_agent.bundling.layout import assert_safe_relative_path
-from transcription_review_agent.constants import BATCH_ID_PATTERN, SHA256_PATTERN
+from transcription_review_agent.constants import (
+    BATCH_ID_PATTERN,
+    MAX_BATCH_SIZE,
+    MIN_BATCH_SIZE,
+    SHA256_PATTERN,
+)
 from transcription_review_agent.state.schema import SourceHashRecord
 
 Sha256 = Annotated[str, Field(pattern=SHA256_PATTERN)]
@@ -82,6 +87,14 @@ class DocumentSelectedEntry(LedgerEntryBase):
     document_id: int = Field(ge=1)
     archive_item_id: int = Field(ge=1)
     language: Literal["en", "fr"]
+    # Set only on the selection that allocates the batch. Absent on older
+    # ledger lines and on selections that join an open batch; replay then
+    # keeps the target already recorded for that batch, or 5 when none was.
+    target_reviewable_count: int | None = Field(
+        default=None,
+        ge=MIN_BATCH_SIZE,
+        le=MAX_BATCH_SIZE,
+    )
 
 
 class RunBlockedEntry(LedgerEntryBase):

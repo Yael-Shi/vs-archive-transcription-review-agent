@@ -16,8 +16,10 @@ def review_next(config: AgentConfig | None = None) -> None:
 
     1. Read the checkpoint and replay the ledger if the checkpoint is behind.
     2. Scan forward from ``last_scanned_document_id``.
-    3. Accumulate up to 5 ``REVIEWABLE`` documents. The first selection allocates
-       its batch id in that same ledger entry.
+    3. Accumulate up to the configured batch size (default 5) of ``REVIEWABLE``
+       documents. The first selection allocates its batch id and records that
+       size in the same ledger entry. A later configuration change does not
+       resize the open batch.
     4. Stop immediately on ``BLOCKING_INTEGRITY_ERROR`` without moving the
        cursor past that document and without allocating a batch when none is
        open. A later run re-fetches that same document while the checkpoint

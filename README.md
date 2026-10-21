@@ -1,6 +1,6 @@
 # Transcription review agent
 
-Read-only Pilot 01 controller for VS Archive transcription review. It will scan public English and French OCR documents, keep a durable scan cursor, and write immutable local bundles for up to five reviewable documents per run.
+Read-only Pilot 01 controller for VS Archive transcription review. It will scan public English and French OCR documents, keep a durable scan cursor, and write immutable local bundles for up to the configured batch size (default five) reviewable documents per run.
 
 This repository is separate from the VS Archive Django application. It does not import that project, write into that checkout, or send anything other than HTTP GET.
 
@@ -18,7 +18,7 @@ No AI provider is part of this milestone.
 
 ## Pilot 01 scope
 
-One run targets five `REVIEWABLE` documents. Documents are atomic. Scan order is ascending `Document.id`.
+One run targets the configured batch size of `REVIEWABLE` documents (default five). Documents are atomic. Scan order is ascending `Document.id`.
 
 | Bundle result | Scan cursor |
 |---|---|
@@ -54,7 +54,7 @@ A sealed checkpoint keeps that batch until the next reviewable document opens a 
 
 `selected` means the document was `REVIEWABLE` and the cursor moved. It does not mean the bytes are durable. `bundled` means the sealed document manifest has been recorded. A blocked checkpoint keeps already selected documents when a batch exists, and keeps no batch id when the block happened first. It does not start bundling.
 
-There is no concurrency control.
+There is no concurrency control. One process owns `state/` and `outputs/`. Sealing does not add a separate lock: a second writer can still interleave the ledger and the checkpoint. Its temporary manifest name is unique so one attempt does not truncate another's unfinished file, and that is crash hygiene rather than multi-writer safety.
 
 ## No-work lifecycle
 
@@ -79,14 +79,14 @@ Historical skip, selection, block, seal, and no-work decisions remain in the led
 
 ## Batch lifecycle
 
-1. Visit candidates in id order. `document_not_found` and `document_non_eligible` advance the cursor and do not join a batch. The first `document_selected` allocates the batch id and records that document in one entry, and the cursor advances in that same entry. Later selections append phase `selected` to the open batch. At most five. An accumulating checkpoint always contains its first document.
+1. Visit candidates in id order. `document_not_found` and `document_non_eligible` advance the cursor and do not join a batch. The first `document_selected` allocates the batch id, records that document, and records the configured batch size in one entry. The cursor advances in that same entry. Later selections append phase `selected` to the open batch and do not change its size. At most that recorded size. An accumulating checkpoint always contains its first document. Changing `TRANSCRIPTION_REVIEW_BATCH_SIZE` does not resize an open or sealed batch. A missing size on an older ledger line means 5.
 2. `run_blocked` — status `blocked`, cursor unchanged, blocked id strictly after the cursor and not in the batch. If documents are already selected, that batch id and those documents stay. If none are selected, `batch_id` is null, `current_batch_id` stays null, and no batch id is consumed. The run stops. Nothing is sealed.
 3. While status is `blocked`, the controller re-fetches that same document and appends nothing for the re-fetch itself. The cursor stays before the document. The same document id, code, message, and details leave the checkpoint and the ledger unchanged, including `updated_at`. A different code, message, or details is one replacement `run_blocked` and still holds the cursor. If the document is reviewable, one `document_selected` resolves the block, advances the cursor to that id, and either joins the open batch or allocates the next real batch id. If it is non-eligible or missing, one `document_non_eligible` or `document_not_found` resolves the block and advances the cursor. An existing selected batch stays. No batch is allocated when none existed. There is no durable cleared-but-unclassified checkpoint. A crash before that outcome is recorded leaves the previous blocked checkpoint in place.
-4. `discovery_exhausted` — no more candidates while at least one document is selected. A short batch of 1–4 is allowed.
+4. `discovery_exhausted` — no more candidates while at least one document is selected. A batch shorter than its recorded target is allowed.
 5. `no_work` — no more candidates and zero selected documents. Not a batch.
-6. `bundling_started` — five selected documents, or 1–4 after exhaustion. Zero documents cannot bundle.
+6. `bundling_started` — the recorded target number of selected documents, or fewer after exhaustion. Zero documents cannot bundle.
 7. `document_bundling` then `document_bundled` — one document at a time, ascending id. Completion records the local transcription SHA-256, each source SHA-256, and the manifest path. The cursor does not move.
-8. `batch_sealed` — every selected document is `bundled`. One to four documents requires exhaustion (`short_batch`). An empty seal is rejected.
+8. `batch_sealed` — every selected document is `bundled`. Fewer documents than the recorded target requires exhaustion (`short_batch`). An empty seal is rejected. The batch manifest references each document manifest and its SHA-256. A manifest already on disk is reused only when it still verifies; it is never overwritten.
 
 ## Local bundle
 
@@ -126,6 +126,7 @@ Set these in the process environment. No dotenv file is read.
 | `TRANSCRIPTION_REVIEW_STATE_DIR` | no | `./state` |
 | `TRANSCRIPTION_REVIEW_BATCHES_DIR` | no | `./outputs/batches` |
 | `TRANSCRIPTION_REVIEW_SCAN_PAGE_LIMIT` | no | `50` (1–200) |
+| `TRANSCRIPTION_REVIEW_BATCH_SIZE` | no | `5` (1–200). Applies when a batch is allocated. An open batch keeps the size recorded on its first `document_selected` entry |
 | `TRANSCRIPTION_REVIEW_REQUEST_TIMEOUT_SECONDS` | no | `30` |
 
 ## Read-only HTTP client

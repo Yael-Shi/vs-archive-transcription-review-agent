@@ -13,7 +13,11 @@ from transcription_review_agent.api_client.schemas import (
     BlockingIntegrityCode,
     NonEligibleCode,
 )
-from transcription_review_agent.constants import PILOT_TARGET_REVIEWABLE_COUNT
+from transcription_review_agent.constants import (
+    MAX_BATCH_SIZE,
+    MIN_BATCH_SIZE,
+    PILOT_TARGET_REVIEWABLE_COUNT,
+)
 from transcription_review_agent.discovery.cursor import (
     CursorEffect,
     assert_document_after_cursor,
@@ -147,16 +151,29 @@ def select_reviewable(
     archive_item_id: int,
     language: Literal["en", "fr"],
     occurred_at: datetime,
+    target_reviewable_count: int | None = None,
 ) -> DocumentSelectedEntry:
     """Plan the selection of one reviewable document.
 
-    If no batch is open, this same entry allocates the next batch id.
-    From a blocked checkpoint it also resolves that exact blocked document.
+    If no batch is open, this same entry allocates the next batch id and
+    records ``target_reviewable_count``. ``None`` keeps the historical default
+    of 5 for ledger lines that predate a configured size. A selection that
+    joins an open batch does not record a new target, so a configuration
+    change cannot resize that batch.
     """
 
     if state.batch_status is BatchStatus.BUNDLING:
         raise StateInvariantError("cannot select a document while bundling")
     _require_effect(CursorEffect.ADVANCE, http_status=200, outcome="REVIEWABLE")
+    joins_open_batch = state.batch_status is BatchStatus.ACCUMULATING or (
+        state.batch_status is BatchStatus.BLOCKED and bool(state.documents)
+    )
+    if joins_open_batch:
+        recorded_target = None
+    else:
+        if target_reviewable_count is not None:
+            _require_batch_target(target_reviewable_count)
+        recorded_target = target_reviewable_count
     if state.batch_status is BatchStatus.BLOCKED:
         _require_blocked_document(state, document_id)
         batch_id = (
@@ -182,6 +199,7 @@ def select_reviewable(
         document_id=document_id,
         archive_item_id=archive_item_id,
         language=language,
+        target_reviewable_count=recorded_target,
     )
 
 
@@ -334,7 +352,7 @@ def seal_batch(
         raise StateInvariantError("only a bundling batch can be sealed")
     if any(document.phase is not DocumentPhase.BUNDLED for document in state.documents):
         raise StateInvariantError("every selected document must be bundled before seal")
-    short_batch = len(state.documents) < PILOT_TARGET_REVIEWABLE_COUNT
+    short_batch = len(state.documents) < state.batch_target_count
     return BatchSealedEntry(
         sequence=state.applied_ledger_sequence + 1,
         occurred_at=occurred_at,
@@ -388,8 +406,10 @@ def _apply_selected(
             raise StateInvariantError(
                 "cannot select documents after discovery is exhausted"
             )
-        if len(state.documents) >= PILOT_TARGET_REVIEWABLE_COUNT:
-            raise StateInvariantError("a batch already has 5 reviewable documents")
+        if len(state.documents) >= state.batch_target_count:
+            raise StateInvariantError(
+                "a batch already has its target number of reviewable documents"
+            )
         if entry.document_id in state.current_batch_document_ids:
             raise StateInvariantError("document is already in the batch")
         documents = [*state.documents, document]
@@ -397,6 +417,9 @@ def _apply_selected(
             update={
                 "documents": documents,
                 "current_batch_document_ids": [item.document_id for item in documents],
+                "batch_target_count": _target_for_selection(
+                    state, entry, allocates=False
+                ),
             }
         )
     if state.batch_status not in {
@@ -417,6 +440,7 @@ def _apply_selected(
             "batch_status": BatchStatus.ACCUMULATING,
             "discovery_exhausted": False,
             "blocked": None,
+            "batch_target_count": _target_for_selection(state, entry, allocates=True),
         }
     )
 
@@ -429,8 +453,10 @@ def _apply_blocked_selection(
     _require_blocked_document(state, entry.document_id)
     if state.documents:
         _require_batch(state, entry)
-        if len(state.documents) >= PILOT_TARGET_REVIEWABLE_COUNT:
-            raise StateInvariantError("a batch already has 5 reviewable documents")
+        if len(state.documents) >= state.batch_target_count:
+            raise StateInvariantError(
+                "a batch already has its target number of reviewable documents"
+            )
         if entry.document_id in state.current_batch_document_ids:
             raise StateInvariantError("document is already in the batch")
         documents = [*state.documents, document]
@@ -440,6 +466,9 @@ def _apply_blocked_selection(
                 "current_batch_document_ids": [item.document_id for item in documents],
                 "batch_status": BatchStatus.ACCUMULATING,
                 "blocked": None,
+                "batch_target_count": _target_for_selection(
+                    state, entry, allocates=False
+                ),
             }
         )
     expected = _next_batch_id(state)
@@ -453,6 +482,7 @@ def _apply_blocked_selection(
             "batch_status": BatchStatus.ACCUMULATING,
             "discovery_exhausted": False,
             "blocked": None,
+            "batch_target_count": _target_for_selection(state, entry, allocates=True),
         }
     )
 
@@ -562,7 +592,7 @@ def _apply_bundling_started(
     _require_hold_cursor(entry)
     if not state.documents:
         raise StateInvariantError("cannot bundle zero documents")
-    full = len(state.documents) == PILOT_TARGET_REVIEWABLE_COUNT
+    full = len(state.documents) == state.batch_target_count
     if not full and not state.discovery_exhausted:
         raise StateInvariantError(
             "bundling starts for a full batch or after discovery exhaustion"
@@ -624,7 +654,7 @@ def _apply_batch_sealed(
     if any(document.phase is not DocumentPhase.BUNDLED for document in state.documents):
         raise StateInvariantError("every selected document must be bundled before seal")
     ids = [document.document_id for document in state.documents]
-    short_batch = len(ids) < PILOT_TARGET_REVIEWABLE_COUNT
+    short_batch = len(ids) < state.batch_target_count
     if entry.document_ids != ids or entry.short_batch != short_batch:
         raise StateInvariantError("seal entry does not match the checkpoint documents")
     if entry.discovery_exhausted != state.discovery_exhausted:
@@ -645,6 +675,41 @@ def _apply_batch_sealed(
             "last_sealed_batch_id": state.current_batch_id,
         }
     )
+
+
+def _target_for_selection(
+    state: ControllerState,
+    entry: DocumentSelectedEntry,
+    *,
+    allocates: bool,
+) -> int:
+    """Return the batch target after this selection.
+
+    ``None`` on an allocating entry is the historical default of 5. The same
+    ``None`` on a selection that joins an open batch, including a blocked
+    batch that already has documents, keeps the target already recorded.
+    """
+
+    if not allocates:
+        _reject_retarget(state, entry)
+        return state.batch_target_count
+    if entry.target_reviewable_count is None:
+        return PILOT_TARGET_REVIEWABLE_COUNT
+    return _require_batch_target(entry.target_reviewable_count)
+
+
+def _reject_retarget(state: ControllerState, entry: DocumentSelectedEntry) -> None:
+    recorded = entry.target_reviewable_count
+    if recorded is not None and recorded != state.batch_target_count:
+        raise StateInvariantError("an open batch keeps the target recorded at allocation")
+
+
+def _require_batch_target(value: int) -> int:
+    if value < MIN_BATCH_SIZE or value > MAX_BATCH_SIZE:
+        raise StateInvariantError(
+            f"batch target must be from {MIN_BATCH_SIZE} to {MAX_BATCH_SIZE}"
+        )
+    return value
 
 
 def _next_batch_id(state: ControllerState) -> str:
