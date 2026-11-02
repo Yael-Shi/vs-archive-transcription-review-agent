@@ -1260,10 +1260,11 @@ def test_default_source_client_disables_redirects_and_env(
         assert banned not in source
 
 
-def test_review_next_remains_unimplemented() -> None:
+def test_review_next_without_an_operation_makes_no_archive_request() -> None:
     from transcription_review_agent.controller.run import review_next
+    from transcription_review_agent.review.errors import ReviewUsageError
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ReviewUsageError, match="No VS Archive request is made"):
         review_next(None)
 
 

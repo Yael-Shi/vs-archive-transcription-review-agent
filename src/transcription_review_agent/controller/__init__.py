@@ -3,7 +3,7 @@
 ``discover_next_batch`` commits discovery decisions. ``bundle_selected_batch``
 publishes verified document bundles for an already selected batch.
 ``seal_selected_batch`` publishes the batch manifest and records the seal.
-``review_next`` is still reserved and does not scan, download, or write state.
+``review_next`` runs a local review operation and does not scan or download.
 """
 
 from transcription_review_agent.bundling.acquire import (

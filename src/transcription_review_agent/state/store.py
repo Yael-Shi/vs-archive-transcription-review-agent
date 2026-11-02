@@ -18,8 +18,11 @@ from transcription_review_agent.state.ledger import (
     dump_ledger_entry,
     parse_ledger_entry,
 )
-from transcription_review_agent.state.schema import ControllerState, initial_state
-from transcription_review_agent.state.transitions import apply_ledger_entry, replay_ledger
+from transcription_review_agent.state.schema import ControllerState
+from transcription_review_agent.state.transitions import (
+    apply_ledger_entry,
+    replay_ledger,
+)
 
 CHECKPOINT_NAME = "controller_state.json"
 LEDGER_NAME = "ledger.jsonl"
@@ -118,7 +121,9 @@ class StateStore:
                 f"refusing to append sequence {entry.sequence}; next sequence is {expected}"
             )
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(dump_ledger_entry(entry), separators=(",", ":"), sort_keys=True)
+        line = json.dumps(
+            dump_ledger_entry(entry), separators=(",", ":"), sort_keys=True
+        )
         payload = (line + "\n").encode("utf-8")
         flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
         fd = os.open(self.ledger_path, flags, 0o644)
@@ -138,7 +143,9 @@ def _read_checkpoint(path: Path) -> ControllerState:
     try:
         return ControllerState.model_validate_json(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StateIntegrityError("checkpoint JSON does not match the state schema") from exc
+        raise StateIntegrityError(
+            "checkpoint JSON does not match the state schema"
+        ) from exc
 
 
 def _atomic_write(path: Path, payload: str) -> None:

@@ -1,0 +1,959 @@
+{
+  "schema_version": "review-provider-output-v1",
+  "stage": "first_pass",
+  "provider": "grok",
+  "provider_interface": "GROK",
+  "task_id": "batch-900002:900002:first_pass:r0:grok:a1",
+  "job_id": "job:batch-900002:900002:first_pass:r0:grok:a1",
+  "batch_id": "batch-900002",
+  "document_id": 900002,
+  "round_index": 0,
+  "attempt": 1,
+  "source_bundle_sha256": "22febf496c60b61d6c8d8848a981f58be77935e42323dec1accc5a10e43b5e2e",
+  "origin": "LOCAL_IMAGE_PILOT",
+  "language": "fr",
+  "inputs_used": [
+    "input/page_001_original.png",
+    "input/source_manifest.json",
+    "input/local_image_provenance.json",
+    "work_request.json"
+  ],
+  "forbidden_inputs_used": [],
+  "transcription_conventions": {
+    "type": "diplomatic",
+    "line_breaks": "as on page",
+    "spelling": "as written, not normalised",
+    "cancellations": "kept inline in text_diplomatic and listed in cancellations",
+    "bbox_units": "pixels of the 1536x2048 original, [x0,y0,x1,y1], approximate"
+  },
+  "pages": [
+    {
+      "page_id": "page_001",
+      "reading_order": 1,
+      "sha256": "22febf496c60b61d6c8d8848a981f58be77935e42323dec1accc5a10e43b5e2e",
+      "width": 1536,
+      "height": 2048,
+      "description": "Single handwritten letter page in French, black-brown ink on squared paper, two filing holes at the left edge.",
+      "regions": [
+        {
+          "region_id": "page_001.r_heading",
+          "type": "place_date_line",
+          "reading_order": 1,
+          "bbox_px": [
+            680,
+            200,
+            1460,
+            320
+          ],
+          "line_ids": [
+            "page_001.l01"
+          ]
+        },
+        {
+          "region_id": "page_001.r_salutation",
+          "type": "salutation",
+          "reading_order": 2,
+          "bbox_px": [
+            60,
+            290,
+            520,
+            370
+          ],
+          "line_ids": [
+            "page_001.l02"
+          ]
+        },
+        {
+          "region_id": "page_001.r_body",
+          "type": "main_text",
+          "reading_order": 3,
+          "bbox_px": [
+            50,
+            360,
+            1525,
+            1950
+          ],
+          "line_ids": [
+            "page_001.l03",
+            "page_001.l04",
+            "page_001.l05",
+            "page_001.l06",
+            "page_001.l07",
+            "page_001.l08",
+            "page_001.l09",
+            "page_001.l10",
+            "page_001.l11",
+            "page_001.l12",
+            "page_001.l13",
+            "page_001.l14",
+            "page_001.l15",
+            "page_001.l16",
+            "page_001.l17",
+            "page_001.l18",
+            "page_001.l19",
+            "page_001.l20",
+            "page_001.l21",
+            "page_001.l22",
+            "page_001.l23",
+            "page_001.l24",
+            "page_001.l25",
+            "page_001.l26",
+            "page_001.l27",
+            "page_001.l28"
+          ]
+        },
+        {
+          "region_id": "page_001.r_annotation_circle",
+          "type": "later_annotation",
+          "reading_order": 4,
+          "bbox_px": [
+            950,
+            190,
+            1360,
+            340
+          ],
+          "line_ids": [],
+          "note": "Hand-drawn oval in blue-green ink, different from the letter's dark ink, encircling '28 Décembre 1952.' No text."
+        },
+        {
+          "region_id": "page_001.r_showthrough",
+          "type": "show_through_verso",
+          "reading_order": 5,
+          "bbox_px": [
+            560,
+            250,
+            1536,
+            1400
+          ],
+          "line_ids": [],
+          "note": "Faint mirror-free show-through of writing from the reverse side (e.g. '1)', '3)', a word like 'petit' in the upper right). Not part of this page's text; not transcribed."
+        },
+        {
+          "region_id": "page_001.r_margins_edges",
+          "type": "blank_margin_and_edges",
+          "reading_order": 6,
+          "bbox_px": [
+            0,
+            0,
+            1536,
+            2048
+          ],
+          "line_ids": [],
+          "note": "Top, bottom, left and right margins examined. Two punched filing holes on the left edge (y about 410 and 1300). No marginal notes found."
+        }
+      ],
+      "lines": [
+        {
+          "line_id": "page_001.l01",
+          "region_id": "page_001.r_heading",
+          "reading_order": 1,
+          "bbox_px": [
+            700,
+            220,
+            1440,
+            300
+          ],
+          "text_diplomatic": "Seguein, le 28 Décembre 1952."
+        },
+        {
+          "line_id": "page_001.l02",
+          "region_id": "page_001.r_salutation",
+          "reading_order": 2,
+          "bbox_px": [
+            80,
+            300,
+            500,
+            360
+          ],
+          "text_diplomatic": "Chèr Victor,"
+        },
+        {
+          "line_id": "page_001.l03",
+          "region_id": "page_001.r_body",
+          "reading_order": 3,
+          "bbox_px": [
+            150,
+            370,
+            1460,
+            440
+          ],
+          "text_diplomatic": "Je m'empresse de t'écrire à peine que j'ai eu l'occasion."
+        },
+        {
+          "line_id": "page_001.l04",
+          "region_id": "page_001.r_body",
+          "reading_order": 4,
+          "bbox_px": [
+            140,
+            440,
+            1500,
+            510
+          ],
+          "text_diplomatic": "Tu me demande beaucoup de questions, je n'ai pas le temps de"
+        },
+        {
+          "line_id": "page_001.l05",
+          "region_id": "page_001.r_body",
+          "reading_order": 5,
+          "bbox_px": [
+            80,
+            500,
+            800,
+            570
+          ],
+          "text_diplomatic": "te donner des réponses détaillées."
+        },
+        {
+          "line_id": "page_001.l06",
+          "region_id": "page_001.r_body",
+          "reading_order": 6,
+          "bbox_px": [
+            150,
+            570,
+            1460,
+            640
+          ],
+          "text_diplomatic": "Je commence par le point le plus important, c'est le \"Hevro\"."
+        },
+        {
+          "line_id": "page_001.l07",
+          "region_id": "page_001.r_body",
+          "reading_order": 7,
+          "bbox_px": [
+            80,
+            630,
+            1480,
+            700
+          ],
+          "text_diplomatic": "Je t'avais dis que nous nous sommes divisés entre nous en deux"
+        },
+        {
+          "line_id": "page_001.l08",
+          "region_id": "page_001.r_body",
+          "reading_order": 8,
+          "bbox_px": [
+            80,
+            690,
+            1400,
+            760
+          ],
+          "text_diplomatic": "groupes, le premier est composé de: Elie P., Clement, Rochel S."
+        },
+        {
+          "line_id": "page_001.l09",
+          "region_id": "page_001.r_body",
+          "reading_order": 9,
+          "bbox_px": [
+            80,
+            750,
+            1100,
+            820
+          ],
+          "text_diplomatic": "Le second est composé du reste des Haverims."
+        },
+        {
+          "line_id": "page_001.l10",
+          "region_id": "page_001.r_body",
+          "reading_order": 10,
+          "bbox_px": [
+            80,
+            810,
+            1480,
+            880
+          ],
+          "text_diplomatic": "Le premier groupe a commencé depuis une semaine, à être"
+        },
+        {
+          "line_id": "page_001.l11",
+          "region_id": "page_001.r_body",
+          "reading_order": 11,
+          "bbox_px": [
+            80,
+            870,
+            1500,
+            940
+          ],
+          "text_diplomatic": "en désaccord avec \"Hover Israel\", et aujourd'hui ils lui ont demandé"
+        },
+        {
+          "line_id": "page_001.l12",
+          "region_id": "page_001.r_body",
+          "reading_order": 12,
+          "bbox_px": [
+            80,
+            930,
+            1480,
+            1000
+          ],
+          "text_diplomatic": "de partir, il a été d'accord pour cela, mais qu'il n'était point"
+        },
+        {
+          "line_id": "page_001.l13",
+          "region_id": "page_001.r_body",
+          "reading_order": 13,
+          "bbox_px": [
+            90,
+            990,
+            1510,
+            1060
+          ],
+          "text_diplomatic": "prêt a leur payer les frais de voyage, et comme tu le sais bien, personne"
+        },
+        {
+          "line_id": "page_001.l14",
+          "region_id": "page_001.r_body",
+          "reading_order": 14,
+          "bbox_px": [
+            80,
+            1050,
+            1480,
+            1120
+          ],
+          "text_diplomatic": "des trois n'a le sous, ainsi s il ne veut pas leur donner a manger."
+        },
+        {
+          "line_id": "page_001.l15",
+          "region_id": "page_001.r_body",
+          "reading_order": 15,
+          "bbox_px": [
+            120,
+            1110,
+            850,
+            1170
+          ],
+          "text_diplomatic": "Je ne sais ce qu'il va arriver."
+        },
+        {
+          "line_id": "page_001.l16",
+          "region_id": "page_001.r_body",
+          "reading_order": 16,
+          "bbox_px": [
+            90,
+            1160,
+            1500,
+            1230
+          ],
+          "text_diplomatic": "Les Haverims, commencent a maudire le Bahad, et ses organisateurs,"
+        },
+        {
+          "line_id": "page_001.l17",
+          "region_id": "page_001.r_body",
+          "reading_order": 17,
+          "bbox_px": [
+            60,
+            1220,
+            1500,
+            1290
+          ],
+          "text_diplomatic": "et je crois que je suis de leur avis, car c'est bien misérable ce qu'ils"
+        },
+        {
+          "line_id": "page_001.l18",
+          "region_id": "page_001.r_body",
+          "reading_order": 18,
+          "bbox_px": [
+            60,
+            1280,
+            420,
+            1340
+          ],
+          "text_diplomatic": "font de nous,"
+        },
+        {
+          "line_id": "page_001.l19",
+          "region_id": "page_001.r_body",
+          "reading_order": 19,
+          "bbox_px": [
+            140,
+            1330,
+            1060,
+            1400
+          ],
+          "text_diplomatic": "Je vais te citer les désavantages qu'il y a.:"
+        },
+        {
+          "line_id": "page_001.l20",
+          "region_id": "page_001.r_body",
+          "reading_order": 20,
+          "bbox_px": [
+            140,
+            1390,
+            1500,
+            1460
+          ],
+          "text_diplomatic": "1) Nous sommes très peu de Haverims et on n'arrive pas a se"
+        },
+        {
+          "line_id": "page_001.l21",
+          "region_id": "page_001.r_body",
+          "reading_order": 21,
+          "bbox_px": [
+            80,
+            1450,
+            1500,
+            1520
+          ],
+          "text_diplomatic": "partager le travail, et après tout il n'y a même pas de travail"
+        },
+        {
+          "line_id": "page_001.l22",
+          "region_id": "page_001.r_body",
+          "reading_order": 22,
+          "bbox_px": [
+            80,
+            1510,
+            1500,
+            1580
+          ],
+          "text_diplomatic": "interessant, il n'y a que la cuisine et cette pauvre Rochel qui n'en"
+        },
+        {
+          "line_id": "page_001.l23",
+          "region_id": "page_001.r_body",
+          "reading_order": 23,
+          "bbox_px": [
+            80,
+            1570,
+            1510,
+            1640
+          ],
+          "text_diplomatic": "sort j que rarement, et cela que pour aller dormir, le deuxième travail,"
+        },
+        {
+          "line_id": "page_001.l24",
+          "region_id": "page_001.r_body",
+          "reading_order": 24,
+          "bbox_px": [
+            80,
+            1630,
+            1500,
+            1700
+          ],
+          "text_diplomatic": "couper du bois, c'est bien malheureux, et le troisième travail, c'est à"
+        },
+        {
+          "line_id": "page_001.l25",
+          "region_id": "page_001.r_body",
+          "reading_order": 25,
+          "bbox_px": [
+            80,
+            1690,
+            1510,
+            1760
+          ],
+          "text_diplomatic": "l'étable, et là je te dis c'est la car ce sera la cause d'une autre perte"
+        },
+        {
+          "line_id": "page_001.l26",
+          "region_id": "page_001.r_body",
+          "reading_order": 26,
+          "bbox_px": [
+            80,
+            1750,
+            1510,
+            1820
+          ],
+          "text_diplomatic": "car il y en a le responsable qui est un si vulgaire type qu'il a fait"
+        },
+        {
+          "line_id": "page_001.l27",
+          "region_id": "page_001.r_body",
+          "reading_order": 27,
+          "bbox_px": [
+            80,
+            1810,
+            1520,
+            1880
+          ],
+          "text_diplomatic": "un enfer de la vref des deux Khoulou, et de Salomon, et qu'il veut faire"
+        },
+        {
+          "line_id": "page_001.l28",
+          "region_id": "page_001.r_body",
+          "reading_order": 28,
+          "bbox_px": [
+            80,
+            1870,
+            1520,
+            1940
+          ],
+          "text_diplomatic": "de même que l'autre groupe, et qu'il me demande de leur arranger"
+        }
+      ],
+      "text_diplomatic": "Seguein, le 28 Décembre 1952.\nChèr Victor,\nJe m'empresse de t'écrire à peine que j'ai eu l'occasion.\nTu me demande beaucoup de questions, je n'ai pas le temps de\nte donner des réponses détaillées.\nJe commence par le point le plus important, c'est le \"Hevro\".\nJe t'avais dis que nous nous sommes divisés entre nous en deux\ngroupes, le premier est composé de: Elie P., Clement, Rochel S.\nLe second est composé du reste des Haverims.\nLe premier groupe a commencé depuis une semaine, à être\nen désaccord avec \"Hover Israel\", et aujourd'hui ils lui ont demandé\nde partir, il a été d'accord pour cela, mais qu'il n'était point\nprêt a leur payer les frais de voyage, et comme tu le sais bien, personne\ndes trois n'a le sous, ainsi s il ne veut pas leur donner a manger.\nJe ne sais ce qu'il va arriver.\nLes Haverims, commencent a maudire le Bahad, et ses organisateurs,\net je crois que je suis de leur avis, car c'est bien misérable ce qu'ils\nfont de nous,\nJe vais te citer les désavantages qu'il y a.:\n1) Nous sommes très peu de Haverims et on n'arrive pas a se\npartager le travail, et après tout il n'y a même pas de travail\ninteressant, il n'y a que la cuisine et cette pauvre Rochel qui n'en\nsort j que rarement, et cela que pour aller dormir, le deuxième travail,\ncouper du bois, c'est bien malheureux, et le troisième travail, c'est à\nl'étable, et là je te dis c'est la car ce sera la cause d'une autre perte\ncar il y en a le responsable qui est un si vulgaire type qu'il a fait\nun enfer de la vref des deux Khoulou, et de Salomon, et qu'il veut faire\nde même que l'autre groupe, et qu'il me demande de leur arranger",
+      "unreadable_spans": [
+        {
+          "id": "u1",
+          "line_id": "page_001.l27",
+          "span": "vref",
+          "char_range_hint": "after 'un enfer de la'",
+          "reason": "letter forms unclear; word not recognised",
+          "alternatives": [
+            "vie",
+            "rref"
+          ]
+        },
+        {
+          "id": "u2",
+          "line_id": "page_001.l23",
+          "span": "j",
+          "reason": "single stroke between 'sort' and 'que' overwritten or struck; may be a cancelled letter",
+          "alternatives": [
+            "(cancelled stroke)",
+            "y"
+          ]
+        }
+      ],
+      "alternative_readings": [
+        {
+          "line_id": "page_001.l01",
+          "reading": "Seguein",
+          "alternatives": [
+            "Seguevin",
+            "Séguin"
+          ],
+          "note": "place name; letters after 'Segu' uncertain"
+        },
+        {
+          "line_id": "page_001.l02",
+          "reading": "Chèr",
+          "alternatives": [
+            "Cher"
+          ],
+          "note": "mark over e may be a grave accent or a stray stroke"
+        },
+        {
+          "line_id": "page_001.l03",
+          "reading": "eu",
+          "alternatives": [
+            "eut"
+          ],
+          "note": "final stroke after 'eu' may be a t"
+        },
+        {
+          "line_id": "page_001.l06",
+          "reading": "Hevro",
+          "alternatives": [
+            "Hevra",
+            "Heuro"
+          ],
+          "note": "term in quotation marks; final letter read as o"
+        },
+        {
+          "line_id": "page_001.l08",
+          "reading": "Rochel S.",
+          "alternatives": [
+            "Rachel S.",
+            "Rochel 3."
+          ],
+          "note": "name; first vowel and the final initial uncertain"
+        },
+        {
+          "line_id": "page_001.l09",
+          "reading": "Haverims",
+          "alternatives": [
+            "Havérims",
+            "Havenims"
+          ],
+          "note": "same word recurs in lines 16 and 20"
+        },
+        {
+          "line_id": "page_001.l11",
+          "reading": "Hover Israel",
+          "alternatives": [
+            "Hovev Israel",
+            "Hoves Israel"
+          ],
+          "note": "name in quotation marks; final letter of first word uncertain"
+        },
+        {
+          "line_id": "page_001.l12",
+          "reading": "point",
+          "alternatives": [
+            "pas"
+          ],
+          "note": "last word on the line"
+        },
+        {
+          "line_id": "page_001.l13",
+          "reading": "personne",
+          "alternatives": [
+            "person",
+            "personn"
+          ],
+          "note": "word runs into the right edge; ending compressed"
+        },
+        {
+          "line_id": "page_001.l16",
+          "reading": "Bahad",
+          "alternatives": [
+            "Bakad",
+            "Bahod"
+          ],
+          "note": "organisation name"
+        },
+        {
+          "line_id": "page_001.l17",
+          "reading": "misérable",
+          "alternatives": [
+            "minable"
+          ],
+          "note": "middle letters compressed"
+        },
+        {
+          "line_id": "page_001.l25",
+          "reading": "ce sera",
+          "alternatives": [
+            "ça sera"
+          ],
+          "note": "first letter looks like g/ç"
+        },
+        {
+          "line_id": "page_001.l25",
+          "reading": "perte",
+          "alternatives": [
+            "porte"
+          ],
+          "note": "last word on the line"
+        },
+        {
+          "line_id": "page_001.l27",
+          "reading": "Khoulou",
+          "alternatives": [
+            "Khoulon",
+            "Khaulou"
+          ],
+          "note": "name"
+        },
+        {
+          "line_id": "page_001.l27",
+          "reading": "Salomon",
+          "alternatives": [
+            "Solomon",
+            "Salamon"
+          ],
+          "note": "name"
+        },
+        {
+          "line_id": "page_001.l28",
+          "reading": "arranger",
+          "alternatives": [
+            "envoyer"
+          ],
+          "note": "last word on the page; letter forms compressed"
+        }
+      ],
+      "cancellations": [
+        {
+          "id": "c1",
+          "line_id": "page_001.l25",
+          "text": "c'est la",
+          "method": "horizontal strike-through",
+          "note": "struck words between 'je te dis' and 'car'"
+        },
+        {
+          "id": "c2",
+          "line_id": "page_001.l14",
+          "text": "s",
+          "method": "struck/overwritten single letter",
+          "note": "between 'ainsi' and 'il'",
+          "certainty": "probable"
+        },
+        {
+          "id": "c3",
+          "line_id": "page_001.l23",
+          "text": "j",
+          "method": "overwritten stroke",
+          "note": "between 'sort' and 'que'; see u2",
+          "certainty": "possible"
+        }
+      ],
+      "insertions": [],
+      "marginal_notes": [],
+      "attention_items": [
+        {
+          "id": "a1",
+          "kind": "text_continues",
+          "line_id": "page_001.l28",
+          "note": "Page ends mid-sentence ('de leur arranger'); the letter continues on another page that is not in this task."
+        },
+        {
+          "id": "a2",
+          "kind": "later_annotation",
+          "region_id": "page_001.r_annotation_circle",
+          "note": "Blue-green oval around the date was added in a different ink, probably later."
+        },
+        {
+          "id": "a3",
+          "kind": "show_through",
+          "region_id": "page_001.r_showthrough",
+          "note": "Writing from the reverse shows through; it was not transcribed as page text."
+        },
+        {
+          "id": "a4",
+          "kind": "proper_names_uncertain",
+          "line_ids": [
+            "page_001.l01",
+            "page_001.l08",
+            "page_001.l11",
+            "page_001.l16",
+            "page_001.l27"
+          ],
+          "note": "Several place, person and organisation names have uncertain readings; see alternative_readings."
+        },
+        {
+          "id": "a5",
+          "kind": "writer_orthography",
+          "note": "Spelling, accents and punctuation kept as written (e.g. 'Tu me demande', 'Je t'avais dis', 'a' for 'à', 'qu'il y a.:'). The writer's e often looks like o; letters are given as intended where context is clear."
+        }
+      ]
+    }
+  ],
+  "unreadable_spans": [
+    {
+      "id": "u1",
+      "line_id": "page_001.l27",
+      "span": "vref",
+      "char_range_hint": "after 'un enfer de la'",
+      "reason": "letter forms unclear; word not recognised",
+      "alternatives": [
+        "vie",
+        "rref"
+      ]
+    },
+    {
+      "id": "u2",
+      "line_id": "page_001.l23",
+      "span": "j",
+      "reason": "single stroke between 'sort' and 'que' overwritten or struck; may be a cancelled letter",
+      "alternatives": [
+        "(cancelled stroke)",
+        "y"
+      ]
+    }
+  ],
+  "alternative_readings": [
+    {
+      "line_id": "page_001.l01",
+      "reading": "Seguein",
+      "alternatives": [
+        "Seguevin",
+        "Séguin"
+      ],
+      "note": "place name; letters after 'Segu' uncertain"
+    },
+    {
+      "line_id": "page_001.l02",
+      "reading": "Chèr",
+      "alternatives": [
+        "Cher"
+      ],
+      "note": "mark over e may be a grave accent or a stray stroke"
+    },
+    {
+      "line_id": "page_001.l03",
+      "reading": "eu",
+      "alternatives": [
+        "eut"
+      ],
+      "note": "final stroke after 'eu' may be a t"
+    },
+    {
+      "line_id": "page_001.l06",
+      "reading": "Hevro",
+      "alternatives": [
+        "Hevra",
+        "Heuro"
+      ],
+      "note": "term in quotation marks; final letter read as o"
+    },
+    {
+      "line_id": "page_001.l08",
+      "reading": "Rochel S.",
+      "alternatives": [
+        "Rachel S.",
+        "Rochel 3."
+      ],
+      "note": "name; first vowel and the final initial uncertain"
+    },
+    {
+      "line_id": "page_001.l09",
+      "reading": "Haverims",
+      "alternatives": [
+        "Havérims",
+        "Havenims"
+      ],
+      "note": "same word recurs in lines 16 and 20"
+    },
+    {
+      "line_id": "page_001.l11",
+      "reading": "Hover Israel",
+      "alternatives": [
+        "Hovev Israel",
+        "Hoves Israel"
+      ],
+      "note": "name in quotation marks; final letter of first word uncertain"
+    },
+    {
+      "line_id": "page_001.l12",
+      "reading": "point",
+      "alternatives": [
+        "pas"
+      ],
+      "note": "last word on the line"
+    },
+    {
+      "line_id": "page_001.l13",
+      "reading": "personne",
+      "alternatives": [
+        "person",
+        "personn"
+      ],
+      "note": "word runs into the right edge; ending compressed"
+    },
+    {
+      "line_id": "page_001.l16",
+      "reading": "Bahad",
+      "alternatives": [
+        "Bakad",
+        "Bahod"
+      ],
+      "note": "organisation name"
+    },
+    {
+      "line_id": "page_001.l17",
+      "reading": "misérable",
+      "alternatives": [
+        "minable"
+      ],
+      "note": "middle letters compressed"
+    },
+    {
+      "line_id": "page_001.l25",
+      "reading": "ce sera",
+      "alternatives": [
+        "ça sera"
+      ],
+      "note": "first letter looks like g/ç"
+    },
+    {
+      "line_id": "page_001.l25",
+      "reading": "perte",
+      "alternatives": [
+        "porte"
+      ],
+      "note": "last word on the line"
+    },
+    {
+      "line_id": "page_001.l27",
+      "reading": "Khoulou",
+      "alternatives": [
+        "Khoulon",
+        "Khaulou"
+      ],
+      "note": "name"
+    },
+    {
+      "line_id": "page_001.l27",
+      "reading": "Salomon",
+      "alternatives": [
+        "Solomon",
+        "Salamon"
+      ],
+      "note": "name"
+    },
+    {
+      "line_id": "page_001.l28",
+      "reading": "arranger",
+      "alternatives": [
+        "envoyer"
+      ],
+      "note": "last word on the page; letter forms compressed"
+    }
+  ],
+  "attention_items": [
+    {
+      "id": "a1",
+      "kind": "text_continues",
+      "line_id": "page_001.l28",
+      "note": "Page ends mid-sentence ('de leur arranger'); the letter continues on another page that is not in this task."
+    },
+    {
+      "id": "a2",
+      "kind": "later_annotation",
+      "region_id": "page_001.r_annotation_circle",
+      "note": "Blue-green oval around the date was added in a different ink, probably later."
+    },
+    {
+      "id": "a3",
+      "kind": "show_through",
+      "region_id": "page_001.r_showthrough",
+      "note": "Writing from the reverse shows through; it was not transcribed as page text."
+    },
+    {
+      "id": "a4",
+      "kind": "proper_names_uncertain",
+      "line_ids": [
+        "page_001.l01",
+        "page_001.l08",
+        "page_001.l11",
+        "page_001.l16",
+        "page_001.l27"
+      ],
+      "note": "Several place, person and organisation names have uncertain readings; see alternative_readings."
+    },
+    {
+      "id": "a5",
+      "kind": "writer_orthography",
+      "note": "Spelling, accents and punctuation kept as written (e.g. 'Tu me demande', 'Je t'avais dis', 'a' for 'à', 'qu'il y a.:'). The writer's e often looks like o; letters are given as intended where context is clear."
+    }
+  ],
+  "cancellations": [
+    {
+      "id": "c1",
+      "line_id": "page_001.l25",
+      "text": "c'est la",
+      "method": "horizontal strike-through",
+      "note": "struck words between 'je te dis' and 'car'"
+    },
+    {
+      "id": "c2",
+      "line_id": "page_001.l14",
+      "text": "s",
+      "method": "struck/overwritten single letter",
+      "note": "between 'ainsi' and 'il'",
+      "certainty": "probable"
+    },
+    {
+      "id": "c3",
+      "line_id": "page_001.l23",
+      "text": "j",
+      "method": "overwritten stroke",
+      "note": "between 'sort' and 'que'; see u2",
+      "certainty": "possible"
+    }
+  ],
+  "insertions": [],
+  "marginal_notes": [],
+  "coverage_report": {
+    "pages_expected": [
+      "page_001"
+    ],
+    "pages_examined": [
+      "page_001"
+    ],
+    "regions_examined": [
+      "page_001.r_heading",
+      "page_001.r_salutation",
+      "page_001.r_body",
+      "page_001.r_annotation_circle",
+      "page_001.r_showthrough",
+      "page_001.r_margins_edges"
+    ],
+    "line_count": 28,
+    "coverage_complete": true,
+    "unresolved_text_present": true,
+    "unresolved_count": 2,
+    "notes": "Every visible region was examined, including margins, edges, the later annotation and the show-through from the verso. No insertions or marginal notes were found. Two spans remain unresolved."
+  }
+}

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from transcription_review_agent.config import load_config
+from transcription_review_agent.config import FORBIDDEN_WRITE_ROOTS, load_config
 from transcription_review_agent.errors import ConfigError
 
 
@@ -31,7 +31,9 @@ def test_batch_size_is_configured_without_code_changes(tmp_path: Path) -> None:
     assert config.batch_size == 2
 
 
-def test_config_rejects_credentials_path_and_vs_archive_checkout(tmp_path: Path) -> None:
+def test_config_rejects_credentials_path_and_vs_archive_checkout(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(ConfigError):
         load_config({}, repo_root=tmp_path)
     with pytest.raises(ConfigError):
@@ -48,7 +50,9 @@ def test_config_rejects_credentials_path_and_vs_archive_checkout(tmp_path: Path)
         load_config(
             {
                 "TRANSCRIPTION_REVIEW_API_BASE_URL": "http://127.0.0.1:8000",
-                "TRANSCRIPTION_REVIEW_STATE_DIR": "/home/yshif/vs-archive/vs-archive/state",
+                "TRANSCRIPTION_REVIEW_STATE_DIR": str(
+                    FORBIDDEN_WRITE_ROOTS[0] / "state"
+                ),
             },
             repo_root=tmp_path,
         )

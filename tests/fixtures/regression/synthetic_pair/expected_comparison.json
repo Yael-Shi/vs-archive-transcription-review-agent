@@ -1,0 +1,286 @@
+{
+  "schema_version": "a0-synthetic-expectation-v1",
+  "note": "Fictional text only. Rows were reviewed by hand against the provider files; IDs are pinned goldens derived from the current comparison, never copied from operational outputs.",
+  "fixture_sha256": {
+    "gpt.json": "2eec14265d4b5a94349d8f96302904508fa201b6466d4847f83ed0380cbc4653",
+    "grok.json": "24ee25839b9b8f734bd57f7addccfd9f9404d7593f359c872f7bf54b986cc3d1"
+  },
+  "counts": {
+    "disputes": 8,
+    "substantive": 6,
+    "alignments": 11
+  },
+  "unresolved_text_page_ids": [],
+  "disputes": [
+    {
+      "dispute_id": "dsp_2eb3ab8c210f8ec3",
+      "category": "MISSING_CONTENT",
+      "page_id": "page_004",
+      "region_id": "c",
+      "gpt_region_ids": [
+        "c"
+      ],
+      "grok_region_ids": [],
+      "gpt_text": "A closing line only one reader saw.",
+      "grok_text": "",
+      "substantive": true
+    },
+    {
+      "dispute_id": "dsp_d13091edfaf3ca80",
+      "category": "READING_ORDER",
+      "page_id": "page_003",
+      "region_id": null,
+      "gpt_region_ids": [
+        "a",
+        "b"
+      ],
+      "grok_region_ids": [
+        "b",
+        "a"
+      ],
+      "gpt_text": "a,b",
+      "grok_text": "b,a",
+      "substantive": true
+    },
+    {
+      "dispute_id": "dsp_8b201056cf1ca0fd",
+      "category": "NAME_OR_ENTITY",
+      "page_id": "page_002",
+      "region_id": "r2",
+      "gpt_region_ids": [
+        "r2"
+      ],
+      "grok_region_ids": [
+        "r2"
+      ],
+      "gpt_text": "Captain Ionnes Marlowe",
+      "grok_text": "Captain Iannes Marlowe",
+      "substantive": true
+    },
+    {
+      "dispute_id": "dsp_4a2ae5a8a1631f5d",
+      "category": "DATE_OR_NUMBER",
+      "page_id": "page_002",
+      "region_id": "r1",
+      "gpt_region_ids": [
+        "r1"
+      ],
+      "grok_region_ids": [
+        "r1"
+      ],
+      "gpt_text": "dated 12 March 1812.",
+      "grok_text": "dated 13 March 1812.",
+      "substantive": true
+    },
+    {
+      "dispute_id": "dsp_17cdd466c90a5b20",
+      "category": "WORDING",
+      "page_id": "page_002",
+      "region_id": "r3",
+      "gpt_region_ids": [
+        "r3"
+      ],
+      "grok_region_ids": [
+        "r3"
+      ],
+      "gpt_text": "the house is damp",
+      "grok_text": "the home is damp",
+      "substantive": true
+    },
+    {
+      "dispute_id": "dsp_e5fc1850ed7ee88e",
+      "category": "CANCELLATION_OR_INSERTION",
+      "page_id": "page_005",
+      "region_id": "a",
+      "gpt_region_ids": [
+        "a"
+      ],
+      "grok_region_ids": [
+        "a"
+      ],
+      "gpt_text": "and",
+      "grok_text": "",
+      "substantive": true
+    },
+    {
+      "dispute_id": "dsp_9965ede29982e217",
+      "category": "COVERAGE_UNCERTAINTY",
+      "page_id": "page_006",
+      "region_id": null,
+      "gpt_region_ids": [],
+      "grok_region_ids": [],
+      "gpt_text": "coverage_complete=False; inaccessible=",
+      "grok_text": "coverage_complete=False; inaccessible=",
+      "substantive": false
+    },
+    {
+      "dispute_id": "dsp_d6d8eb98f8e53196",
+      "category": "PUNCTUATION",
+      "page_id": "page_002",
+      "region_id": "r4",
+      "gpt_region_ids": [
+        "r4"
+      ],
+      "grok_region_ids": [
+        "r4"
+      ],
+      "gpt_text": "quay is Corrupt",
+      "grok_text": "quay is corrupt.",
+      "substantive": false
+    }
+  ],
+  "alignments": [
+    {
+      "alignment_id": "aln_c4d04c92fd9b2b42",
+      "page_id": "page_001",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "r1"
+      ],
+      "grok_region_ids": [
+        "r1"
+      ],
+      "gpt_text": "Letter from the fictional Harbour\nBoard, dated in spring.",
+      "grok_text": "Letter from the fictional\nHarbour Board, dated in spring.",
+      "sequence": 0
+    },
+    {
+      "alignment_id": "aln_68fc165d0d20ffc6",
+      "page_id": "page_002",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "r1"
+      ],
+      "grok_region_ids": [
+        "r1"
+      ],
+      "gpt_text": "dated 12 March 1812.",
+      "grok_text": "dated 13 March 1812.",
+      "sequence": 0
+    },
+    {
+      "alignment_id": "aln_39a0920a4904397a",
+      "page_id": "page_002",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "r2"
+      ],
+      "grok_region_ids": [
+        "r2"
+      ],
+      "gpt_text": "Captain Ionnes Marlowe",
+      "grok_text": "Captain Iannes Marlowe",
+      "sequence": 1
+    },
+    {
+      "alignment_id": "aln_95ce20ac4006abc0",
+      "page_id": "page_002",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "r3"
+      ],
+      "grok_region_ids": [
+        "r3"
+      ],
+      "gpt_text": "the house is damp",
+      "grok_text": "the home is damp",
+      "sequence": 2
+    },
+    {
+      "alignment_id": "aln_633ebfc623e0f42c",
+      "page_id": "page_002",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "r4"
+      ],
+      "grok_region_ids": [
+        "r4"
+      ],
+      "gpt_text": "quay is Corrupt",
+      "grok_text": "quay is corrupt.",
+      "sequence": 3
+    },
+    {
+      "alignment_id": "aln_8abe16e00dcc4dfc",
+      "page_id": "page_003",
+      "kind": "reordered",
+      "gpt_region_ids": [
+        "a"
+      ],
+      "grok_region_ids": [
+        "a"
+      ],
+      "gpt_text": "First paragraph about tides.",
+      "grok_text": "First paragraph about tides.",
+      "sequence": 0
+    },
+    {
+      "alignment_id": "aln_1922b9e9d4ad9cb7",
+      "page_id": "page_003",
+      "kind": "reordered",
+      "gpt_region_ids": [
+        "b"
+      ],
+      "grok_region_ids": [
+        "b"
+      ],
+      "gpt_text": "Second paragraph about nets.",
+      "grok_text": "Second paragraph about nets.",
+      "sequence": 1
+    },
+    {
+      "alignment_id": "aln_ba5f224b503472fe",
+      "page_id": "page_004",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "a"
+      ],
+      "grok_region_ids": [
+        "a"
+      ],
+      "gpt_text": "Shared opening line.",
+      "grok_text": "Shared opening line.",
+      "sequence": 0
+    },
+    {
+      "alignment_id": "aln_45c7972f3b72bb1b",
+      "page_id": "page_004",
+      "kind": "missing",
+      "gpt_region_ids": [
+        "c"
+      ],
+      "grok_region_ids": [],
+      "gpt_text": "A closing line only one reader saw.",
+      "grok_text": "",
+      "sequence": 1
+    },
+    {
+      "alignment_id": "aln_4d55834940878bc0",
+      "page_id": "page_005",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "a"
+      ],
+      "grok_region_ids": [
+        "a"
+      ],
+      "gpt_text": "youth and the middle",
+      "grok_text": "youth and the middle",
+      "sequence": 0
+    },
+    {
+      "alignment_id": "aln_b3d205ecf70717e6",
+      "page_id": "page_006",
+      "kind": "matched",
+      "gpt_region_ids": [
+        "z"
+      ],
+      "grok_region_ids": [
+        "z"
+      ],
+      "gpt_text": "Faded last page.",
+      "grok_text": "Faded last page.",
+      "sequence": 0
+    }
+  ]
+}
