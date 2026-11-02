@@ -30,7 +30,7 @@ One run targets the configured batch size of `REVIEWABLE` documents (default fiv
 
 Discovery exhaustion with 1–4 reviewable documents is a valid short batch. Exhaustion with zero reviewable documents is a no-work result: the cursor is kept, no batch id is allocated, and no batch manifest is written. PDFs stay the original PDF bytes from the API. Rasterization is later.
 
-The controller loop is not implemented. `review-next` exits before reading configuration or opening a socket. The read-only HTTP client can scan and fetch a review bundle; it does not download presigned source URLs.
+`discover_next_batch` scans and selects documents. `bundle_selected_batch` downloads sources and publishes document bundles. `seal_selected_batch` writes the batch manifest. `review-next` does not do that work. It prepares, inspects, accepts, and finalizes a local review of a bundle that is already sealed. An invocation without an operation exits with status 2 and does not read discovery configuration or open a socket. The read-only HTTP client can scan and fetch a review bundle; it does not download presigned source URLs.
 
 ## Controller state
 
@@ -64,7 +64,7 @@ Do not open a batch before the first `REVIEWABLE` document.
 2. `document_not_found` and `document_non_eligible` advance the cursor and do not take a batch id. From `idle` or `no_work` this enters `scanning`.
 3. If a `REVIEWABLE` document appears, the same `document_selected` entry allocates the next real id (`batch-000001` when nothing has sealed) and records that document. Selection then continues as a normal batch.
 4. If discovery exhausts with zero selected documents, append one `no_work` ledger entry. Status becomes `no_work`. `current_batch_id` is null. `documents` is empty. `discovery_exhausted` is true. The cursor and `last_sealed_batch_id` stay as they were. No `batch_manifest.json` is published.
-5. A later `review-next` that is still exhausted at that same cursor does not append another `no_work` event and does not allocate a batch id. The checkpoint is already terminal.
+5. A later discovery run that is still exhausted at that same cursor does not append another `no_work` event and does not allocate a batch id. The checkpoint is already terminal.
 6. When a newer document appears, scan again after the saved cursor. A 404 or non-eligible visit leaves `no_work` for `scanning` without a batch id. Another exhaustion can record `no_work` again, still without a batch id. The first new reviewable document opens the next real batch.
 
 ## Ledger
@@ -112,7 +112,7 @@ A manifest is published with exclusive create. A second publish of the same path
 - A checkpoint/ledger mismatch is not repaired by dropping history.
 - A sealed manifest is not overwritten.
 - A sealed bundle that fails hash verification is not repaired.
-- Paths inside `/home/yshif/vs-archive/vs-archive` are rejected.
+- Paths inside the VS Archive application checkout are rejected.
 - API URLs with userinfo, queries, or a path are rejected.
 - `VERIFIED` transcriptions are `NON_ELIGIBLE` on the server and cannot be sealed locally as reviewable.
 
@@ -148,6 +148,25 @@ Timeouts raise `ApiTimeoutError`. Connection and other network failures raise `A
 
 The client does not download source files and does not write `state/` or `outputs/`.
 
+## Quality checks
+
+Install the development tools with the project:
+
+```bash
+python -m pip install -e '.[dev]'
+```
+
+`mypy` is 2.4.1 and `ruff` is 0.14.14. Those versions are pinned. Pytest stays `pytest>=8`.
+
+```bash
+ruff check src/ tests/
+ruff format --check src/ tests/
+mypy
+pytest
+```
+
+`ruff check` uses Ruff's default rules and covers every Python file under `src/` and `tests/`. `ruff format --check` uses those same directories, and the unchanged modules listed in `[tool.ruff.format] exclude` are left out of formatting. Pass a directory, not an excluded file path: a file named on the command line is formatted even when it is excluded. `mypy` checks `transcription_review_agent.review` only. It does not ignore errors in that package.
+
 ## This milestone
 
-Schemas, cursor rules, state transitions, ledger replay, bundle manifests, and the read-only scan/bundle client are in place. Source download, controller writes, and the scan/seal loop are not. No AI provider is wired in. `review-next` is reserved and exits with status 2 before reading configuration or opening a socket.
+Schemas, cursor rules, state transitions, ledger replay, bundle manifests, discovery, source acquisition, and batch sealing are in place. `review-next` runs the local file-based review on a sealed bundle: prepare work, inspect status, accept a provider file, and finalize. An interim report is a versioned snapshot and does not close the document. A completed review is a later version and does not rewrite earlier ones. Dispatch to GPT Work and Grok Bot stays manual. `review-next` does not scan, call a model API, automate a desktop, or write the archive. An invocation without an operation exits with status 2 before opening a socket.

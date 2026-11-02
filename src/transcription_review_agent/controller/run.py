@@ -1,45 +1,164 @@
-"""Reserved entry point for a future ``review-next`` run.
+"""Local ``review-next`` operations for an already sealed batch.
 
-The loop is not implemented. Nothing in this module reads configuration,
-opens a socket, or writes state.
+These commands prepare review work, inspect status, accept a dropped provider
+file, explicitly close the challenge stage, and finalize a document. They do
+not scan VS Archive, open a socket, or write a sealed bundle.
 """
 
 from __future__ import annotations
 
-from transcription_review_agent.config import AgentConfig
+import argparse
+import json
+from pathlib import Path
+
+from transcription_review_agent.errors import ConfigError
+from transcription_review_agent.review.config import load_review_config
+from transcription_review_agent.review.controller import CLOSURE_MODES, ReviewController
+from transcription_review_agent.review.errors import ReviewPolicyError, ReviewUsageError
 
 
-def review_next(config: AgentConfig | None = None) -> None:
-    """Future run: scan, bundle, and checkpoint. Not implemented.
+def review_next(config: object | None = None, argv: list[str] | None = None) -> None:
+    """Run one explicit local review operation.
 
-    When implemented, one invocation will:
-
-    1. Read the checkpoint and replay the ledger if the checkpoint is behind.
-    2. Scan forward from ``last_scanned_document_id``.
-    3. Accumulate up to the configured batch size (default 5) of ``REVIEWABLE``
-       documents. The first selection allocates its batch id and records that
-       size in the same ledger entry. A later configuration change does not
-       resize the open batch.
-    4. Stop immediately on ``BLOCKING_INTEGRITY_ERROR`` without moving the
-       cursor past that document and without allocating a batch when none is
-       open. A later run re-fetches that same document while the checkpoint
-       stays blocked. An unchanged blocking result appends nothing. A
-       reviewable, non-eligible, or 404 result is one ledger entry that
-       resolves the block.
-    5. If discovery exhausts with zero ``REVIEWABLE`` documents, record
-       no-work, keep the cursor, and do not allocate a batch id or publish a
-       manifest. The same cursor again is not a new no-work event.
-    6. Otherwise download and fingerprint sources for the selected documents.
-    7. Publish an immutable batch bundle.
-    8. Checkpoint state.
-    9. Stop.
-
-    ``config`` is accepted so the signature can stay stable. This milestone
-    does not read it.
+    ``config`` is ignored. Discovery configuration is not loaded, and an empty
+    argument list does not scan or download anything.
     """
 
     del config
-    raise NotImplementedError(
-        "Pilot 01 controller loop is not implemented. "
-        "No VS Archive request is made."
+    if not argv:
+        raise ReviewUsageError(
+            "review-next requires an operation. No VS Archive request is made."
+        )
+    parser = _parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        raise ReviewUsageError(
+            "review-next usage was not recognized. No VS Archive request is made."
+        ) from exc
+    try:
+        review_config = load_review_config()
+    except ConfigError as exc:
+        raise ReviewUsageError(f"{exc}. No VS Archive request is made.") from exc
+    controller = ReviewController(
+        batches_dir=Path(args.batches_dir),
+        reviews_dir=Path(args.reviews_dir),
+        config=review_config,
     )
+    if args.operation == "prepare":
+        _prepare(controller, args)
+        return
+    if args.operation == "status":
+        status = controller.status(args.batch_id, args.document_id)
+        print(
+            json.dumps(
+                {
+                    "document_id": status.document_id,
+                    "execution_state": status.execution_state,
+                    "quality": status.quality,
+                    "providers": status.providers,
+                    "finalized": status.finalized,
+                    "challenge_rounds": status.challenge_rounds,
+                    "challenge_closure": status.challenge_closure,
+                },
+                sort_keys=True,
+            )
+        )
+        return
+    if args.operation == "accept":
+        if args.provider is None:
+            raise ReviewUsageError(
+                "accept requires --provider. No VS Archive request is made."
+            )
+        controller.accept(
+            args.batch_id,
+            args.document_id,
+            args.provider,
+            stage=args.stage,
+            round_index=args.round_index,
+        )
+        return
+    if args.operation == "close-challenge":
+        if args.closure_mode is None or args.reason is None:
+            raise ReviewUsageError(
+                "close-challenge requires --closure-mode and --reason. "
+                "No VS Archive request is made."
+            )
+        controller.close_challenge(
+            args.batch_id,
+            args.document_id,
+            mode=args.closure_mode,
+            reason=args.reason,
+        )
+        return
+    controller.finalize(
+        args.batch_id,
+        args.document_id,
+        provisional=args.provisional,
+    )
+
+
+def _prepare(controller: ReviewController, args: argparse.Namespace) -> None:
+    controller.open_sealed_document(args.batch_id, args.document_id)
+    providers = (args.provider,) if args.provider else ("gpt", "grok")
+    evidence_path = Path(args.evidence_path) if args.evidence_path else None
+    selected = list(args.dispute_id) if args.dispute_id else None
+    for provider in providers:
+        if args.stage == "first_pass":
+            status = controller.status(args.batch_id, args.document_id)
+            if status.providers[provider] not in {"NOT_STARTED", "RETRYABLE_FAILURE"}:
+                continue
+        try:
+            controller.publish(
+                args.batch_id,
+                args.document_id,
+                provider,
+                stage=args.stage,
+                evidence=args.evidence,
+                evidence_path=evidence_path,
+                selected_dispute_ids=selected,
+            )
+        except ReviewPolicyError as exc:
+            message = str(exc)
+            if (
+                "already succeeded" in message
+                or "quota-blocked" in message
+                or "cannot be dispatched" in message
+            ):
+                continue
+            raise
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="review-next", add_help=False)
+    parser.add_argument(
+        "operation",
+        choices=("prepare", "status", "accept", "close-challenge", "finalize"),
+    )
+    parser.add_argument("--batches-dir", required=True)
+    parser.add_argument("--reviews-dir", required=True)
+    parser.add_argument("--batch-id", required=True)
+    parser.add_argument("--document-id", required=True, type=int)
+    parser.add_argument("--provider", choices=("gpt", "grok"))
+    parser.add_argument(
+        "--stage", default="first_pass", choices=("first_pass", "challenge", "research")
+    )
+    parser.add_argument("--round-index", type=int)
+    parser.add_argument("--evidence")
+    parser.add_argument("--evidence-path")
+    parser.add_argument(
+        "--dispute-id",
+        action="append",
+        help="challenge stage only: select this substantive dispute ID (repeatable)",
+    )
+    parser.add_argument(
+        "--closure-mode",
+        choices=CLOSURE_MODES,
+        help="close-challenge only: why the challenge stage ends",
+    )
+    parser.add_argument(
+        "--reason",
+        help="close-challenge only: the operator's explicit, recorded reason",
+    )
+    parser.add_argument("--provisional", action="store_true")
+    return parser

@@ -1,0 +1,41 @@
+{
+  "schema_version": "a0-fixture-policy-v1",
+  "recorded_on": "2026-11-02",
+  "repository": {
+    "remote": "git@github.com:Yael-Shi/vs-archive-transcription-review-agent.git",
+    "visibility": "UNVERIFIED",
+    "visibility_note": "Could not be confirmed from this environment (GitHub API unreachable). Treated as potentially public and forkable.",
+    "forks_or_mirrors": "UNKNOWN"
+  },
+  "archival_restrictions": {
+    "licensing_or_privacy_review": "NOT_PERFORMED",
+    "names_or_content_publication_restrictions": "UNKNOWN",
+    "git_history_retention_acceptable": "NOT_APPROVED"
+  },
+  "decision": {
+    "archival_content_in_git": false,
+    "approved_by": null,
+    "approval_reference": null,
+    "applies_to_documents": [104, 105],
+    "rationale": "Without a confirmed private repository and an explicit approval, no archival text, names, images, provider outputs, or hashes of archival text are committed. Git history is effectively permanent."
+  },
+  "storage": {
+    "committed_tier": {
+      "location": "tests/fixtures/regression/synthetic_pair/",
+      "content": "Fictional text only; invented names, dates and places.",
+      "always_run": true
+    },
+    "authorized_tier": {
+      "location": "Outside Git; directory named by VS_ARCHIVAL_FIXTURE_DIR",
+      "manifest": "<dir>/archival_fixture_manifest.json",
+      "content": "Provider first-pass JSON for documents 104/105 plus a SHA-256 hash manifest and expected semantic rows.",
+      "always_run": false
+    }
+  },
+  "minimized_content_set": {
+    "committed": ["synthetic provider files gpt.json and grok.json", "expected_comparison.json"],
+    "authorized_external_only": ["document 104 gpt/grok first-pass outputs", "document 105 gpt/grok first-pass outputs", "expected counts, category counts and selected exact-reading rows"],
+    "never_committed_without_approval": ["archival transcription text or excerpts", "page images or crops", "operational ledgers, state or review bundles", "dispute IDs derived from archival text"]
+  },
+  "stale_identifier_rule": "Document 104 v001 dispute IDs are stale (old comparison: 156 disputes / 141 substantive; regenerated: 138 / 86). Fixture IDs must always be regenerated from the current comparison and must equal the documented ID formula applied to the row text. They are never copied from operational outputs."
+}

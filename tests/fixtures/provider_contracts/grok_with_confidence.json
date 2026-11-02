@@ -1,0 +1,14 @@
+{
+  "schema_version": "review-provider-output-v1",
+  "provider": "gpt",
+  "provider_interface": "GPT_WORK",
+  "stage": "first_pass",
+  "task_id": "placeholder",
+  "job_id": "placeholder",
+  "batch_id": "batch-000001",
+  "document_id": 101,
+  "attempt": 1,
+  "source_bundle_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "confidence": 0.91,
+  "pages": []
+}

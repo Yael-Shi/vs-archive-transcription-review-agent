@@ -15,7 +15,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "mypy==2.4.1",
     "pytest>=8",
+    "ruff==0.14.14",
 ]
 
 [project.scripts]
@@ -27,3 +29,49 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+
+# Default Ruff rules stay in force. `ruff check src/ tests/` still lints every
+# Python file under those directories. Formatting is limited to the files
+# already formatted on this branch; the modules below are excluded from
+# formatting only.
+[tool.ruff.format]
+exclude = [
+    "src/transcription_review_agent/__init__.py",
+    "src/transcription_review_agent/api_client/__init__.py",
+    "src/transcription_review_agent/api_client/client.py",
+    "src/transcription_review_agent/api_client/errors.py",
+    "src/transcription_review_agent/api_client/schemas.py",
+    "src/transcription_review_agent/bundling/__init__.py",
+    "src/transcription_review_agent/bundling/acquire.py",
+    "src/transcription_review_agent/bundling/hashing.py",
+    "src/transcription_review_agent/bundling/layout.py",
+    "src/transcription_review_agent/bundling/manifest.py",
+    "src/transcription_review_agent/bundling/publish.py",
+    "src/transcription_review_agent/bundling/seal.py",
+    "src/transcription_review_agent/bundling/verify.py",
+    "src/transcription_review_agent/config.py",
+    "src/transcription_review_agent/constants.py",
+    "src/transcription_review_agent/controller/discovery.py",
+    "src/transcription_review_agent/discovery/__init__.py",
+    "src/transcription_review_agent/discovery/cursor.py",
+    "src/transcription_review_agent/errors.py",
+    "src/transcription_review_agent/state/__init__.py",
+    "src/transcription_review_agent/state/ledger.py",
+    "src/transcription_review_agent/state/schema.py",
+    "src/transcription_review_agent/state/transitions.py",
+    "tests/support.py",
+    "tests/test_api_client.py",
+    "tests/test_api_schemas.py",
+    "tests/test_cursor.py",
+    "tests/test_ledger.py",
+    "tests/test_manifest.py",
+    "tests/test_seal.py",
+    "tests/test_state.py",
+    "tests/test_verify.py",
+]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+explicit_package_bases = true
+packages = ["transcription_review_agent.review"]

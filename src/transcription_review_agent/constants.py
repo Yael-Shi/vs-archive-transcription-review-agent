@@ -1,14 +1,16 @@
 """Pilot 01 constants shared by schemas, state, and bundle layout."""
 
+from typing import Final
+
 PILOT_TARGET_REVIEWABLE_COUNT = 5
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 200
 
-SCAN_SCHEMA_VERSION = "transcription-review-scan-v1"
-BUNDLE_SCHEMA_VERSION = "transcription-review-bundle-v1"
+SCAN_SCHEMA_VERSION: Final = "transcription-review-scan-v1"
+BUNDLE_SCHEMA_VERSION: Final = "transcription-review-bundle-v1"
 STATE_SCHEMA_VERSION = 1
-LOCAL_DOCUMENT_BUNDLE_SCHEMA_VERSION = "local-document-bundle-v1"
-LOCAL_BATCH_SCHEMA_VERSION = "local-batch-v1"
+LOCAL_DOCUMENT_BUNDLE_SCHEMA_VERSION: Final = "local-document-bundle-v1"
+LOCAL_BATCH_SCHEMA_VERSION: Final = "local-batch-v1"
 
 SCAN_PATH = "/api/agent/v1/transcription-review/documents/scan"
 BUNDLE_PATH_TEMPLATE = (

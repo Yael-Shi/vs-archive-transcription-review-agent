@@ -1,0 +1,199 @@
+{
+  "schema_version": "review-provider-output-v1",
+  "task_id": "batch-900002:900002:first_pass:r0:gpt:a1",
+  "job_id": "job:batch-900002:900002:first_pass:r0:gpt:a1",
+  "batch_id": "batch-900002",
+  "document_id": 900002,
+  "stage": "first_pass",
+  "round_index": 0,
+  "attempt": 1,
+  "provider": "gpt",
+  "provider_interface": "GPT_WORK",
+  "source_bundle_sha256": "22febf496c60b61d6c8d8848a981f58be77935e42323dec1accc5a10e43b5e2e",
+  "language": "fr",
+  "pages": [
+    {
+      "page_id": "page_001",
+      "reading_order": 1,
+      "diplomatic_transcription": "Leguevin. le 28 Décembre 1952.\n\nCher Victor,\nJe m'empresse de t'écrire à peine que j'ai eu l'occasion.\nTu me demande beaucoup de questions, je n'ai pas le temps de\nte donner des réponses détaillées.\nJe commencerai par le point le plus important, c'est le \"Hevro\".\nJe t'avais dis que nous nous sommes divisés entre nous en deux\nGroupes, le premier est composé de : Élie P., Claucent, Roeliebas.\nLe second est composé du reste des Haverims.\nLe premier groupe a commencé depuis une semaine, à être\nen désacord avec \"Hover Israel\", et aujourd'hui ils lui ont demandé\nde partir, il a été d'accord pour cela, mais qu'il n'était point\nprêt à leur payer les frais de voyage, et comme tu le sais bien, personne\ndes trois n'a le sous, aussi il ne veut pas leur donner à manger.\nJe ne sais ce qu'il va arriver.\nLes Haverims, commencent à maudire le Bakad, et ses organisateurs,\net je crois que je suis de leur avis, car c'est bien misérable ce qu'ils\nfont de nous,\nJe vais t'écrire les désavantages qu'il y a :\n1) Nous sommes très peu de Haverims et on n'arrive pas à se\npartager le travail, et après tout il n'y a même pas de travail\nintéressant, il n'y a que la cuisine et cette pauvre Rochel qui n'en\nsort presque rarement, et cela que pour elle donne, le deuxième travail\ncouper du bois, c'est bien monotone, et le troisième travail, c'est à\nl'étable, et là je te dis ⟦c'est le cas⟧ je sais le cause d'une autre peste\ncar il y en a le responsable qui est un si vulgaire type qu'il a fait\nun enfer de travail, des deux Khoutot, et de Salomon, et qu'il veut faire\nde même que l'autre groupe, et qu'il me demande de bien arranger",
+      "regions": [
+        {
+          "region_id": "page_001-r01",
+          "region_type": "dateline",
+          "reading_order": 1,
+          "lines": [
+            {
+              "line_id": "page_001-r01-l01",
+              "text": "Leguevin. le 28 Décembre 1952."
+            }
+          ]
+        },
+        {
+          "region_id": "page_001-r02",
+          "region_type": "salutation_and_body",
+          "reading_order": 2,
+          "lines": [
+            { "line_id": "page_001-r02-l01", "text": "Cher Victor," },
+            { "line_id": "page_001-r02-l02", "text": "Je m'empresse de t'écrire à peine que j'ai eu l'occasion." },
+            { "line_id": "page_001-r02-l03", "text": "Tu me demande beaucoup de questions, je n'ai pas le temps de" },
+            { "line_id": "page_001-r02-l04", "text": "te donner des réponses détaillées." },
+            { "line_id": "page_001-r02-l05", "text": "Je commencerai par le point le plus important, c'est le \"Hevro\"." },
+            { "line_id": "page_001-r02-l06", "text": "Je t'avais dis que nous nous sommes divisés entre nous en deux" },
+            { "line_id": "page_001-r02-l07", "text": "Groupes, le premier est composé de : Élie P., Claucent, Roeliebas." },
+            { "line_id": "page_001-r02-l08", "text": "Le second est composé du reste des Haverims." },
+            { "line_id": "page_001-r02-l09", "text": "Le premier groupe a commencé depuis une semaine, à être" },
+            { "line_id": "page_001-r02-l10", "text": "en désacord avec \"Hover Israel\", et aujourd'hui ils lui ont demandé" },
+            { "line_id": "page_001-r02-l11", "text": "de partir, il a été d'accord pour cela, mais qu'il n'était point" },
+            { "line_id": "page_001-r02-l12", "text": "prêt à leur payer les frais de voyage, et comme tu le sais bien, personne" },
+            { "line_id": "page_001-r02-l13", "text": "des trois n'a le sous, aussi il ne veut pas leur donner à manger." },
+            { "line_id": "page_001-r02-l14", "text": "Je ne sais ce qu'il va arriver." },
+            { "line_id": "page_001-r02-l15", "text": "Les Haverims, commencent à maudire le Bakad, et ses organisateurs," },
+            { "line_id": "page_001-r02-l16", "text": "et je crois que je suis de leur avis, car c'est bien misérable ce qu'ils" },
+            { "line_id": "page_001-r02-l17", "text": "font de nous," },
+            { "line_id": "page_001-r02-l18", "text": "Je vais t'écrire les désavantages qu'il y a :" }
+          ]
+        },
+        {
+          "region_id": "page_001-r03",
+          "region_type": "numbered_list",
+          "reading_order": 3,
+          "lines": [
+            { "line_id": "page_001-r03-l01", "text": "1) Nous sommes très peu de Haverims et on n'arrive pas à se" },
+            { "line_id": "page_001-r03-l02", "text": "partager le travail, et après tout il n'y a même pas de travail" },
+            { "line_id": "page_001-r03-l03", "text": "intéressant, il n'y a que la cuisine et cette pauvre Rochel qui n'en" },
+            { "line_id": "page_001-r03-l04", "text": "sort presque rarement, et cela que pour elle donne, le deuxième travail" },
+            { "line_id": "page_001-r03-l05", "text": "couper du bois, c'est bien monotone, et le troisième travail, c'est à" },
+            { "line_id": "page_001-r03-l06", "text": "l'étable, et là je te dis ⟦c'est le cas⟧ je sais le cause d'une autre peste" },
+            { "line_id": "page_001-r03-l07", "text": "car il y en a le responsable qui est un si vulgaire type qu'il a fait" },
+            { "line_id": "page_001-r03-l08", "text": "un enfer de travail, des deux Khoutot, et de Salomon, et qu'il veut faire" },
+            { "line_id": "page_001-r03-l09", "text": "de même que l'autre groupe, et qu'il me demande de bien arranger" }
+          ]
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [
+        {
+          "line_id": "page_001-r01-l01",
+          "reading": "Leguevin",
+          "alternatives": ["Léguevin", "Seguevin"],
+          "reason": "The initial capital and first accent are not fully discriminable in the hand."
+        },
+        {
+          "line_id": "page_001-r02-l05",
+          "reading": "Hevro",
+          "alternatives": ["Hévro", "Heuro"],
+          "reason": "Quoted, underlined non-French term; the middle letterform is ambiguous."
+        },
+        {
+          "line_id": "page_001-r02-l07",
+          "reading": "Élie P., Claucent, Roeliebas",
+          "alternatives": ["Élie P., Claurent, Roeliebaz", "Élie P., Claucent, Roelieboz"],
+          "reason": "Three proper names or abbreviated names have tightly joined letterforms, especially the second surname's medial consonant and the final letters of the third."
+        },
+        {
+          "line_id": "page_001-r02-l10",
+          "reading": "Hover Israel",
+          "alternatives": ["Hove Israel", "Hover Israël"],
+          "reason": "Quoted name; the final consonant of the first word and the presence of a diaeresis are uncertain."
+        },
+        {
+          "line_id": "page_001-r02-l15",
+          "reading": "Bakad",
+          "alternatives": ["Bakod", "Bakad"],
+          "reason": "Non-French name or acronym with an ambiguous middle vowel."
+        },
+        {
+          "line_id": "page_001-r03-l03",
+          "reading": "Rochel",
+          "alternatives": ["Roehel", "Roebel"],
+          "reason": "Proper name with a looped medial consonant."
+        },
+        {
+          "line_id": "page_001-r03-l04",
+          "reading": "et cela que pour elle donne",
+          "alternatives": ["et celle que pour elle donne", "et ce que pour elle donne"],
+          "reason": "Several short joined words are visually ambiguous; the retained reading is diplomatic and is not grammatically normalized."
+        },
+        {
+          "line_id": "page_001-r03-l06",
+          "reading": "c'est le cas",
+          "alternatives": ["c'est le ça"],
+          "reason": "The phrase is struck through but remains partly legible."
+        },
+        {
+          "line_id": "page_001-r03-l08",
+          "reading": "Khoutot",
+          "alternatives": ["Khoulot", "Khoutos"],
+          "reason": "Plural-looking non-French term with ambiguous final letters."
+        }
+      ],
+      "attention_items": [
+        {
+          "attention_id": "page_001-a01",
+          "line_ids": ["page_001-r02-l07"],
+          "category": "uncertain_proper_names",
+          "description": "The three names in the first group's membership list require human review."
+        },
+        {
+          "attention_id": "page_001-a02",
+          "line_ids": ["page_001-r03-l09"],
+          "category": "text_continues_beyond_page",
+          "description": "The final sentence is syntactically incomplete and visibly continues beyond the bottom of this page."
+        },
+        {
+          "attention_id": "page_001-a03",
+          "line_ids": [],
+          "category": "show_through",
+          "description": "Faint reverse-side writing is visible across the sheet and was examined but excluded from the foreground transcription."
+        }
+      ],
+      "cancellations": [
+        {
+          "cancellation_id": "page_001-c01",
+          "line_id": "page_001-r03-l06",
+          "text": "c'est le cas",
+          "method": "single-line strike-through",
+          "certainty": "probable"
+        }
+      ],
+      "insertions": [],
+      "marginal_notes": [
+        {
+          "marginal_note_id": "page_001-m01",
+          "location": "upper-right dateline",
+          "text": "",
+          "description": "A blue oval surrounds the date; this is a non-textual later marking."
+        }
+      ]
+    }
+  ],
+  "attention_items": [
+    {
+      "attention_id": "document-a01",
+      "page_id": "page_001",
+      "category": "human_review_recommended",
+      "description": "Review the uncertain names and transliterated terms, the ambiguous clause on page_001-r03-l04, and the struck-through wording on page_001-r03-l06."
+    }
+  ],
+  "coverage_report": {
+    "expected_page_ids": ["page_001"],
+    "examined_page_ids": ["page_001"],
+    "missing_page_ids": [],
+    "coverage_complete": true,
+    "unresolved_text_present": true,
+    "visible_regions_examined": [
+      "upper margin and dateline",
+      "left salutation",
+      "full-width body",
+      "numbered list",
+      "left, right, and lower margins",
+      "non-textual annotations",
+      "faint reverse-side show-through"
+    ],
+    "notes": [
+      "All visible foreground writing on the single supplied page was examined.",
+      "No foreground span was wholly unreadable; unresolved readings are recorded as alternatives.",
+      "The last sentence continues beyond the supplied page."
+    ]
+  }
+}

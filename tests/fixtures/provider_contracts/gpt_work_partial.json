@@ -1,0 +1,9 @@
+{
+  "schema_version": "review-provider-output-v1",
+  "provider": "gpt",
+  "provider_interface": "GPT_WORK",
+  "stage": "first_pass",
+  "batch_id": "batch-000001",
+  "document_id": 101,
+  "attempt": 1
+}

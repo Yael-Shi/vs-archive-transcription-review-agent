@@ -970,9 +970,9 @@ def test_no_source_downloads_ai_calls_or_payload_persistence(tmp_path: Path) -> 
     )
     assert PRESIGN_SECRET not in rendered
     assert TRANSCRIPTION_SECRET not in rendered
-    source = Path(
-        "/home/yshif/vs-archive/vs-archive-transcription-review-agent/src/transcription_review_agent/controller/discovery.py"
-    ).read_text(encoding="utf-8")
+    import transcription_review_agent.controller.discovery as discovery
+
+    source = Path(discovery.__file__).read_text(encoding="utf-8")
     for banned in ("openai", "anthropic", "download_url", AI_HOST):
         assert banned not in source
 
@@ -1202,7 +1202,12 @@ def test_shrinking_batch_size_does_not_close_an_open_batch(tmp_path: Path) -> No
         for entry in store.read_ledger()
         if entry.event_type == "document_selected" and entry.document_id != 1
     ]
-    assert [entry.target_reviewable_count for entry in joined] == [None, None, None, None]
+    assert [entry.target_reviewable_count for entry in joined] == [
+        None,
+        None,
+        None,
+        None,
+    ]
 
 
 def test_growing_batch_size_does_not_extend_a_full_batch(tmp_path: Path) -> None:
@@ -1309,8 +1314,9 @@ def test_pre_batch_block_resolution_uses_the_current_batch_size(tmp_path: Path) 
     assert store.load() == state
 
 
-def test_review_next_remains_unimplemented() -> None:
+def test_review_next_without_an_operation_makes_no_archive_request() -> None:
     from transcription_review_agent.controller.run import review_next
+    from transcription_review_agent.review.errors import ReviewUsageError
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ReviewUsageError, match="No VS Archive request is made"):
         review_next(None)

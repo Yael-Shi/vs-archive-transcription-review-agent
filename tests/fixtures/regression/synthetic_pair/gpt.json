@@ -1,0 +1,287 @@
+{
+  "schema_version": "review-provider-output-v1",
+  "provider": "gpt",
+  "provider_interface": "GPT_WORK",
+  "task_id": "synthetic-task-gpt",
+  "job_id": "synthetic-job-gpt",
+  "batch_id": "batch-900001",
+  "document_id": 900001,
+  "attempt": 1,
+  "source_bundle_sha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+  "stage": "first_pass",
+  "pages": [
+    {
+      "page_id": "page_001",
+      "reading_order": 1,
+      "diplomatic_transcription": "Letter from the fictional Harbour\nBoard, dated in spring.",
+      "regions": [
+        {
+          "region_id": "r1",
+          "order": 1,
+          "lines": [
+            {
+              "line_id": "r1_l1",
+              "text": "Letter from the fictional Harbour"
+            },
+            {
+              "line_id": "r1_l2",
+              "text": "Board, dated in spring."
+            }
+          ],
+          "bbox": null
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [],
+      "attention_items": [],
+      "coverage": {
+        "coverage_complete": true,
+        "unresolved_text_present": false,
+        "examined_region_ids": [
+          "r1"
+        ],
+        "inaccessible_or_ambiguous": []
+      },
+      "cancellations": [],
+      "insertions": [],
+      "marginal_notes": [],
+      "inaccessible_or_ambiguous": []
+    },
+    {
+      "page_id": "page_002",
+      "reading_order": 2,
+      "diplomatic_transcription": "dated 12 March 1812.\nCaptain Ionnes Marlowe\nthe house is damp\nquay is Corrupt",
+      "regions": [
+        {
+          "region_id": "r1",
+          "order": 1,
+          "lines": [
+            {
+              "line_id": "r1_l1",
+              "text": "dated 12 March 1812."
+            }
+          ],
+          "bbox": null
+        },
+        {
+          "region_id": "r2",
+          "order": 2,
+          "lines": [
+            {
+              "line_id": "r2_l1",
+              "text": "Captain Ionnes Marlowe"
+            }
+          ],
+          "bbox": null
+        },
+        {
+          "region_id": "r3",
+          "order": 3,
+          "lines": [
+            {
+              "line_id": "r3_l1",
+              "text": "the house is damp"
+            }
+          ],
+          "bbox": null
+        },
+        {
+          "region_id": "r4",
+          "order": 4,
+          "lines": [
+            {
+              "line_id": "r4_l1",
+              "text": "quay is Corrupt"
+            }
+          ],
+          "bbox": null
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [],
+      "attention_items": [
+        {
+          "kind": "name",
+          "text": "Captain Ionnes Marlowe",
+          "region_id": "r2"
+        }
+      ],
+      "coverage": {
+        "coverage_complete": true,
+        "unresolved_text_present": false,
+        "examined_region_ids": [
+          "r1",
+          "r2",
+          "r3",
+          "r4"
+        ],
+        "inaccessible_or_ambiguous": []
+      },
+      "cancellations": [],
+      "insertions": [],
+      "marginal_notes": [],
+      "inaccessible_or_ambiguous": []
+    },
+    {
+      "page_id": "page_003",
+      "reading_order": 3,
+      "diplomatic_transcription": "First paragraph about tides.\nSecond paragraph about nets.",
+      "regions": [
+        {
+          "region_id": "a",
+          "order": 1,
+          "lines": [
+            {
+              "line_id": "a_l1",
+              "text": "First paragraph about tides."
+            }
+          ],
+          "bbox": null
+        },
+        {
+          "region_id": "b",
+          "order": 2,
+          "lines": [
+            {
+              "line_id": "b_l1",
+              "text": "Second paragraph about nets."
+            }
+          ],
+          "bbox": null
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [],
+      "attention_items": [],
+      "coverage": {
+        "coverage_complete": true,
+        "unresolved_text_present": false,
+        "examined_region_ids": [
+          "a",
+          "b"
+        ],
+        "inaccessible_or_ambiguous": []
+      },
+      "cancellations": [],
+      "insertions": [],
+      "marginal_notes": [],
+      "inaccessible_or_ambiguous": []
+    },
+    {
+      "page_id": "page_004",
+      "reading_order": 4,
+      "diplomatic_transcription": "Shared opening line.\nA closing line only one reader saw.",
+      "regions": [
+        {
+          "region_id": "a",
+          "order": 1,
+          "lines": [
+            {
+              "line_id": "a_l1",
+              "text": "Shared opening line."
+            }
+          ],
+          "bbox": null
+        },
+        {
+          "region_id": "c",
+          "order": 2,
+          "lines": [
+            {
+              "line_id": "c_l1",
+              "text": "A closing line only one reader saw."
+            }
+          ],
+          "bbox": null
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [],
+      "attention_items": [],
+      "coverage": {
+        "coverage_complete": true,
+        "unresolved_text_present": false,
+        "examined_region_ids": [
+          "a",
+          "c"
+        ],
+        "inaccessible_or_ambiguous": []
+      },
+      "cancellations": [],
+      "insertions": [],
+      "marginal_notes": [],
+      "inaccessible_or_ambiguous": []
+    },
+    {
+      "page_id": "page_005",
+      "reading_order": 5,
+      "diplomatic_transcription": "youth and the middle",
+      "regions": [
+        {
+          "region_id": "a",
+          "order": 1,
+          "lines": [
+            {
+              "line_id": "a_l1",
+              "text": "youth and the middle"
+            }
+          ],
+          "bbox": null
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [],
+      "attention_items": [],
+      "coverage": {
+        "coverage_complete": true,
+        "unresolved_text_present": false,
+        "examined_region_ids": [
+          "a"
+        ],
+        "inaccessible_or_ambiguous": []
+      },
+      "cancellations": [
+        {
+          "region_id": "a",
+          "text": "and"
+        }
+      ],
+      "insertions": [],
+      "marginal_notes": [],
+      "inaccessible_or_ambiguous": []
+    },
+    {
+      "page_id": "page_006",
+      "reading_order": 6,
+      "diplomatic_transcription": "Faded last page.",
+      "regions": [
+        {
+          "region_id": "z",
+          "order": 1,
+          "lines": [
+            {
+              "line_id": "z_l1",
+              "text": "Faded last page."
+            }
+          ],
+          "bbox": null
+        }
+      ],
+      "unreadable_spans": [],
+      "alternative_readings": [],
+      "attention_items": [],
+      "coverage": {
+        "coverage_complete": false,
+        "unresolved_text_present": false,
+        "examined_region_ids": [
+          "z"
+        ],
+        "inaccessible_or_ambiguous": []
+      },
+      "cancellations": [],
+      "insertions": [],
+      "marginal_notes": [],
+      "inaccessible_or_ambiguous": []
+    }
+  ]
+}
