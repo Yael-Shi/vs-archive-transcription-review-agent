@@ -148,6 +148,51 @@ Timeouts raise `ApiTimeoutError`. Connection and other network failures raise `A
 
 The client does not download source files and does not write `state/` or `outputs/`.
 
+## Invalid challenge output
+
+`review-next validate` reads a provider file with the same parsing, identity, and evidence rules as `accept`. It does not append a ledger entry, rewrite the checkpoint, change provider status, or write the output file. `output_valid` and `eligible_for_acceptance` are separate. A valid file is not eligible once its attempt is `INVALID_OUTPUT`, and an attempt that is still `AWAITING_MANUAL_DISPATCH` can still have an invalid file. The command prints a JSON report. It exits 0 when the file is valid and 1 when it is not. Eligibility does not change that exit code.
+
+`INVALID_OUTPUT` stays terminal for that attempt. `review-next recover-invalid-output` publishes one new attempt in the same challenge round: a new task id, job id, and output path. The limit is one recovery per provider per round. It does not open another round, change the comparison, the selected dispute ids, the selection hash, or the `EVIDENCE_BOUND_V1` contract, and it does not move or edit the rejected file. The rejected attempt's task bundle is copied under `attempts/a01/task/` before the live task directory is updated. A second call, after the new attempt is already awaiting dispatch, prints the same work request and appends nothing.
+
+Recovery is refused when the provider already succeeded, the round is reconciled, the challenge stage is closed, the document is finalized, or the recovery limit is spent. `accept` still requires the new attempt's identity and, for `EVIDENCE_BOUND_V1`, an evidence reference and assessment on every selected dispute. Validate the new file before accept. A failed accept records `INVALID_OUTPUT` for the new attempt, and that second rejection cannot be recovered.
+
+For the isolated document 105 pilot, after this code is reviewed, the sequence is:
+
+```bash
+review-next recover-invalid-output \
+  --batches-dir outputs/batches \
+  --reviews-dir outputs/reviews_track_a_pilot_105 \
+  --batch-id batch-000001 \
+  --document-id 105 \
+  --provider gpt \
+  --stage challenge \
+  --round-index 1
+```
+
+Leave `challenge_round_01/output/challenge_gpt.json` unchanged. Read the printed `work_request.json`. Write a new JSON file only at its `output_relative_path` (`challenge_round_01/attempts/a02/output/challenge_gpt.json`). Copy `provider`, `provider_interface`, `task_id`, `job_id`, `batch_id`, `document_id`, `attempt`, `source_bundle_sha256`, `stage`, and `round_index` from that work request. Keep the five dispute decisions and their evidence references. `output_example.json` in the task directory shows the required shape; it is not a reading.
+
+```bash
+review-next validate \
+  --batches-dir outputs/batches \
+  --reviews-dir outputs/reviews_track_a_pilot_105 \
+  --batch-id batch-000001 \
+  --document-id 105 \
+  --provider gpt \
+  --stage challenge \
+  --round-index 1
+
+review-next accept \
+  --batches-dir outputs/batches \
+  --reviews-dir outputs/reviews_track_a_pilot_105 \
+  --batch-id batch-000001 \
+  --document-id 105 \
+  --provider gpt \
+  --stage challenge \
+  --round-index 1
+```
+
+Accept only when validate reports `output_valid` true and `eligible_for_acceptance` true. Grok's attempt is a separate dispatch and is not changed by GPT's recovery.
+
 ## Quality checks
 
 Install the development tools with the project:

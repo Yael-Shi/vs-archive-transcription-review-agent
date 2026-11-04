@@ -107,11 +107,24 @@ def shared_output_dir(doc_root: Path, stage: str, round_index: int) -> Path:
     return doc_root / stage_dir_name(stage, round_index) / "output"
 
 
-def output_relative_path(stage: str, provider: str, round_index: int) -> str:
+def output_relative_path(
+    stage: str, provider: str, round_index: int, attempt: int = 1
+) -> str:
+    """Provider drop path. Attempt 1 keeps the historical shared output name.
+
+    A recovered challenge attempt uses its own directory so the rejected file
+    stays where the provider wrote it.
+    """
+
     name = output_filename(stage, provider)
-    return assert_safe_relative_path(
-        f"{stage_dir_name(stage, round_index)}/output/{name}"
-    )
+    directory = stage_dir_name(stage, round_index)
+    if attempt == 1:
+        relative = f"{directory}/output/{name}"
+    elif attempt > 1:
+        relative = f"{directory}/attempts/a{attempt:02d}/output/{name}"
+    else:
+        raise ReviewPathError("attempt must be positive")
+    return assert_safe_relative_path(relative)
 
 
 def assert_allowlisted_output_dir(directory: Path) -> None:

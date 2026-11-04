@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -69,6 +70,15 @@ from transcription_review_agent.review.first_pass_contract import (
     first_pass_instruction_note,
     first_pass_schema_text,
 )
+from transcription_review_agent.review.provider_output_contract import (
+    challenge_instructions,
+    challenge_schema_text,
+    matching_challenge_contract_pair,
+    recognized_challenge_instruction_texts,
+    recognized_challenge_schema_texts,
+    render_output_example,
+    template_placeholder_problem,
+)
 from transcription_review_agent.review.errors import (
     ReviewIntegrityError,
     ReviewLimitError,
@@ -116,6 +126,7 @@ from transcription_review_agent.review.paths import (
     stage_dir_name,
 )
 from transcription_review_agent.review.runtime import (
+    MAX_INVALID_OUTPUT_RECOVERIES,
     ChallengeClosedEntry,
     ChallengeContract,
     ChallengeReconciledEntry,
@@ -397,6 +408,7 @@ class ReviewController:
         evidence: str | None = None,
         evidence_path: Path | None = None,
         selected_dispute_ids: Sequence[str] | None = None,
+        recover_invalid_output: bool = False,
     ) -> Path:
         """Write a self-contained task bundle and a manual work request.
 
@@ -421,13 +433,24 @@ class ReviewController:
             _require_research_allowed(document, doc_root)
         if stage_name == "challenge":
             _require_challenge_allowed(document)
-        round_index = _round_for_publish(
-            document,
-            stage_name,
-            provider,
-            evidence,
-            max_rounds=self.config.max_challenge_rounds,
-        )
+        if recover_invalid_output:
+            if stage_name != "challenge":
+                raise ReviewPolicyError(
+                    "invalid-output recovery is only available for a challenge round"
+                )
+            if document.finalized:
+                raise ReviewPolicyError(
+                    "a finalized review cannot recover a challenge attempt"
+                )
+            round_index = _round_for_recovery(document, provider)
+        else:
+            round_index = _round_for_publish(
+                document,
+                stage_name,
+                provider,
+                evidence,
+                max_rounds=self.config.max_challenge_rounds,
+            )
         existing_round = (
             next(
                 (
@@ -463,6 +486,17 @@ class ReviewController:
             )
         evidence_sha256 = None
         evidence_relative = None
+        if (stage_name == "challenge" and existing_round is not None) or (
+            stage_name == "research"
+        ):
+            # A crash between the two directory renames leaves no live task
+            # directory. Restore it before the bundle is written again.
+            # Challenge covers invalid-output recovery and an ordinary retry.
+            # Research covers an ordinary transient retry only.
+            _resume_pending_task_install(
+                doc_root / stage_dir_name(stage_name, round_index) / "tasks" / provider,
+                evidence_bound=challenge_contract == EVIDENCE_BOUND_CONTRACT,
+            )
         if stage_name == "challenge":
             if existing_round is not None and evidence not in {
                 None,
@@ -491,7 +525,21 @@ class ReviewController:
             )
         if runtime.status is ProviderStatus.QUOTA_BLOCKED:
             raise ReviewPolicyError("quota-blocked jobs are not retried")
-        if runtime.status in {ProviderStatus.FAILED, ProviderStatus.INVALID_OUTPUT}:
+        if recover_invalid_output:
+            if runtime.status is not ProviderStatus.INVALID_OUTPUT:
+                raise ReviewPolicyError(
+                    "recovery requires a provider attempt in INVALID_OUTPUT"
+                )
+            if existing_round is None or existing_round.reconciled:
+                raise ReviewPolicyError(
+                    "a reconciled challenge round cannot be recovered"
+                )
+            if runtime.invalid_output_recoveries >= MAX_INVALID_OUTPUT_RECOVERIES:
+                raise ReviewPolicyError(
+                    "invalid-output recovery limit is one new attempt "
+                    "per provider per challenge round"
+                )
+        elif runtime.status in {ProviderStatus.FAILED, ProviderStatus.INVALID_OUTPUT}:
             raise ReviewPolicyError("this provider attempt cannot be dispatched again")
         if runtime.status is ProviderStatus.AWAITING_MANUAL_DISPATCH:
             return _request_path(doc_root, stage_name, provider, round_index)
@@ -515,6 +563,7 @@ class ReviewController:
             stage=stage_name,
             round_index=round_index,
             attempt=attempt,
+            distinct_output_attempt=recover_invalid_output,
         )
         transcription = _archive_text(self.batches_dir, batch_id, document_id)
         gpt = (
@@ -534,6 +583,16 @@ class ReviewController:
                 round_index,
                 expected_contract=challenge_contract,
             )
+        if recover_invalid_output:
+            _preserve_rejected_task(
+                doc_root / stage_dir_name(stage_name, round_index) / "tasks" / provider,
+                doc_root
+                / stage_dir_name(stage_name, round_index)
+                / "attempts"
+                / f"a{runtime.attempt:02d}"
+                / "task",
+                rejected_attempt=runtime.attempt,
+            )
         _prepare_bundle(
             doc_root,
             document,
@@ -545,6 +604,7 @@ class ReviewController:
             challenge_selection=task_selection,
             challenge_contract=challenge_contract,
             challenge_already_published=existing_round is not None,
+            replace_task_contract=recover_invalid_output,
         )
         store = self._store(batch_id)
         current = store.load()
@@ -625,7 +685,16 @@ class ReviewController:
         ):
             raise ReviewPolicyError("provider work has not been published")
         try:
-            assert_allowlisted_output_dir(output.parent)
+            model = _read_provider_output(
+                output,
+                batch_id=batch_id,
+                provider=provider,
+                stage=stage_name,
+                document=document,
+                runtime=runtime,
+                round_index=round_index,
+                doc_root=doc_root,
+            )
         except ReviewPathError as exc:
             self._reject(
                 state,
@@ -637,19 +706,6 @@ class ReviewController:
                 preserve=False,
             )
             raise ReviewOutputRejected("duplicated", str(exc)) from exc
-        if not output.is_file():
-            raise ReviewResultMissing(f"missing provider output {output.name}")
-        try:
-            model = _parse_provider_file(
-                output,
-                batch_id=batch_id,
-                provider=provider,
-                stage=stage_name,
-                document=document,
-                runtime=runtime,
-                round_index=round_index,
-                doc_root=doc_root,
-            )
         except ReviewOutputRejected as exc:
             self._reject(
                 state,
@@ -706,6 +762,151 @@ class ReviewController:
             assert reloaded is not None
             updated = reloaded
         return self._status(updated, find_document(updated, document_id))
+
+    def validate_output(
+        self,
+        batch_id: str,
+        document_id: int,
+        provider: str,
+        *,
+        stage: str = "first_pass",
+        round_index: int | None = None,
+    ) -> dict[str, object]:
+        """Check a provider file with the accept rules, without writing state.
+
+        ``output_valid`` is the parse, identity, and evidence result.
+        ``eligible_for_acceptance`` is whether this attempt is still waiting
+        for accept. A valid file can be ineligible, and an eligible attempt
+        can have an invalid file. Neither result changes the ledger, the
+        checkpoint, provider status, or the output file.
+        """
+
+        provider = _provider_name(provider)
+        stage_name = _stage_name(stage)
+        _state, document = self._require_document(batch_id, document_id)
+        self._require_unchanged_source(batch_id, document)
+        if round_index is None:
+            round_index = (
+                document.challenge_rounds[-1].round_index
+                if stage_name == "challenge" and document.challenge_rounds
+                else 0
+            )
+        try:
+            runtime = _runtime_or_new(document, stage_name, provider, round_index)
+        except ReviewIntegrityError as exc:
+            return _preflight_report(
+                stage=stage_name,
+                provider=provider,
+                round_index=round_index,
+                attempt=None,
+                relative=None,
+                eligible=False,
+                eligibility="not_published",
+                failures=[{"reason": "integrity", "message": str(exc)}],
+            )
+        relative = runtime.output_relative_path or output_relative_path(
+            stage_name, provider, round_index
+        )
+        eligible = (
+            runtime.status is ProviderStatus.AWAITING_MANUAL_DISPATCH
+            and runtime.task_id is not None
+        )
+        doc_root = document_root(self.reviews_dir, batch_id, document_id)
+        output = contained(doc_root, doc_root / relative)
+        failures: list[dict[str, str]] = []
+        try:
+            _read_provider_output(
+                output,
+                batch_id=batch_id,
+                provider=provider,
+                stage=stage_name,
+                document=document,
+                runtime=runtime,
+                round_index=round_index,
+                doc_root=doc_root,
+            )
+        except ReviewResultMissing as exc:
+            failures.append({"reason": "missing", "message": str(exc)})
+        except ReviewPathError as exc:
+            failures.append({"reason": "duplicated", "message": str(exc)})
+        except ReviewOutputRejected as exc:
+            failures.append({"reason": exc.reason, "message": str(exc)})
+        except ReviewIntegrityError as exc:
+            failures.append({"reason": "integrity", "message": str(exc)})
+        return _preflight_report(
+            stage=stage_name,
+            provider=provider,
+            round_index=round_index,
+            attempt=runtime.attempt or None,
+            relative=relative,
+            eligible=eligible,
+            eligibility=(
+                "awaiting_manual_dispatch" if eligible else runtime.status.value
+            ),
+            failures=failures,
+        )
+
+    def recover_invalid_output(
+        self,
+        batch_id: str,
+        document_id: int,
+        provider: str,
+        *,
+        stage: str = "challenge",
+        round_index: int | None = None,
+    ) -> Path:
+        """Publish one new challenge attempt after INVALID_OUTPUT.
+
+        The rejected attempt stays terminal. Its output file is not moved or
+        rewritten. A second call for an attempt that is already awaiting
+        dispatch returns that attempt's work request and appends nothing.
+        """
+
+        provider = _provider_name(provider)
+        stage_name = _stage_name(stage)
+        if stage_name != "challenge":
+            raise ReviewPolicyError(
+                "invalid-output recovery is only available for a challenge round"
+            )
+        _state, document = self._require_document(batch_id, document_id)
+        self._require_unchanged_source(batch_id, document)
+        if document.finalized:
+            raise ReviewPolicyError(
+                "a finalized review cannot recover a challenge attempt"
+            )
+        if document.challenge_closure is not None:
+            raise ReviewPolicyError(
+                "the challenge stage is closed; a rejected attempt stays terminal"
+            )
+        expected_round = _round_for_recovery(document, provider)
+        if round_index is not None and round_index != expected_round:
+            raise ReviewPolicyError(
+                "that challenge round has no recoverable invalid output"
+            )
+        round_index = expected_round
+        runtime = provider_runtime(
+            document,
+            stage="challenge",
+            provider=provider,
+            round_index=round_index,
+        )
+        if runtime.status is ProviderStatus.SUCCEEDED:
+            raise ReviewPolicyError(
+                "refusing to recover a provider attempt that already succeeded"
+            )
+        doc_root = document_root(self.reviews_dir, batch_id, document_id)
+        if (
+            runtime.status is ProviderStatus.AWAITING_MANUAL_DISPATCH
+            and runtime.invalid_output_recoveries >= 1
+        ):
+            return _request_path(doc_root, stage_name, provider, round_index)
+        return self.publish(
+            batch_id,
+            document_id,
+            provider,
+            stage=stage_name,
+            recover_invalid_output=True,
+        )
 
     def record_failure(
         self,
@@ -1404,8 +1605,10 @@ def _work_request(
     stage: StageName,
     round_index: int,
     attempt: int,
+    distinct_output_attempt: bool = False,
 ) -> WorkRequest:
     task_id = f"{batch_id}:{document.document_id}:{stage}:r{round_index}:{provider}:a{attempt}"
+    output_attempt = attempt if distinct_output_attempt else 1
     return WorkRequest(
         provider=provider,  # type: ignore[arg-type]
         provider_interface=interface_for(provider),
@@ -1417,7 +1620,9 @@ def _work_request(
         round_index=round_index,
         attempt=attempt,
         source_bundle_sha256=document.source_bundle_sha256,
-        output_relative_path=output_relative_path(stage, provider, round_index),
+        output_relative_path=output_relative_path(
+            stage, provider, round_index, output_attempt
+        ),
         page_ids=[page.page_id for page in document.pages],
         forbidden_inputs=[
             "original_ocr_transcription",
@@ -1428,6 +1633,38 @@ def _work_request(
             "historical_identity_suggestions",
         ],
     )
+
+
+def _round_for_recovery(document: DocumentReviewState, provider: str) -> int:
+    """The challenge round whose attempt may be recovered for ``provider``."""
+
+    invalid: list[int] = []
+    recovered: list[int] = []
+    succeeded: list[int] = []
+    for challenge in document.challenge_rounds:
+        runtime = next(
+            item for item in challenge.providers if item.provider == provider
+        )
+        if runtime.status is ProviderStatus.SUCCEEDED:
+            succeeded.append(challenge.round_index)
+        if challenge.reconciled:
+            continue
+        if runtime.status is ProviderStatus.INVALID_OUTPUT:
+            invalid.append(challenge.round_index)
+        elif (
+            runtime.status is ProviderStatus.AWAITING_MANUAL_DISPATCH
+            and runtime.invalid_output_recoveries >= 1
+        ):
+            recovered.append(challenge.round_index)
+    if len(invalid) == 1:
+        return invalid[0]
+    if not invalid and len(recovered) == 1:
+        return recovered[0]
+    if succeeded and not invalid:
+        raise ReviewPolicyError(
+            "refusing to recover a provider attempt that already succeeded"
+        )
+    raise ReviewPolicyError("recovery requires a provider attempt in INVALID_OUTPUT")
 
 
 def _round_for_publish(
@@ -1595,6 +1832,7 @@ def _prepare_bundle(
     challenge_selection: Sequence[str] | None = None,
     challenge_contract: ChallengeContract | None = None,
     challenge_already_published: bool = False,
+    replace_task_contract: bool = False,
 ) -> None:
     stage_root = doc_root / stage_dir_name(request.stage, request.round_index)
     task_dir = stage_root / "tasks" / request.provider
@@ -1612,10 +1850,11 @@ def _prepare_bundle(
             instructions = f"{instructions}{_grouped_challenge_note()}"
     if instruction_note:
         instructions = f"{instructions}\n{instruction_note.strip()}\n"
-    _write_if_same(
-        stage_root / f"instructions_{request.provider}.txt",
-        instructions.encode("utf-8"),
-    )
+    stage_instructions = stage_root / f"instructions_{request.provider}.txt"
+    # A recovered attempt keeps the historical stage-level copy. The task
+    # directory is the contract the provider receives.
+    if not (replace_task_contract and stage_instructions.exists()):
+        _write_if_same(stage_instructions, instructions.encode("utf-8"))
     files = {
         f"instructions_{request.provider}.txt": instructions.encode("utf-8"),
         "work_request.json": canonical_json(request).encode("utf-8"),
@@ -1646,6 +1885,14 @@ def _prepare_bundle(
         _write_research_input(doc_root, gpt_and_grok=_both_outputs(doc_root, document))
         research_input = doc_root / "research" / "input" / "research_request.json"
         files["input/research_request.json"] = research_input.read_bytes()
+    example_input = (
+        files.get("input/disputes.json") if request.stage == "challenge" else None
+    )
+    files["output_example.json"] = render_output_example(
+        request,
+        challenge_input=example_input,
+        evidence_bound=challenge_contract == EVIDENCE_BOUND_CONTRACT,
+    )
     if extra_files:
         overlap = set(extra_files) & set(files)
         if overlap:
@@ -1653,8 +1900,16 @@ def _prepare_bundle(
                 "local pilot file collides with the task allowlist"
             )
         files.update(extra_files)
-    _write_allowlisted(task_dir, files)
+    _write_allowlisted(
+        task_dir,
+        files,
+        replace_contract=replace_task_contract,
+        evidence_bound=challenge_contract == EVIDENCE_BOUND_CONTRACT,
+    )
     (stage_root / "output").mkdir(parents=True, exist_ok=True)
+    recovered_output = doc_root / request.output_relative_path
+    if recovered_output.parent != (stage_root / "output"):
+        recovered_output.parent.mkdir(parents=True, exist_ok=True)
     _reject_transcription_leak(task_dir, transcription)
 
 
@@ -1976,25 +2231,8 @@ def _instructions(
             f"{first_pass_instruction_note()}"
         )
     if stage == "challenge":
-        legacy = (
-            "Inspect the page image and the crop window. The crop is existing pixels,\n"
-            "not new detail. FULL_PAGE_FALLBACK means no region box was usable,\n"
-            "so the window is the whole page and is not a targeted crop.\n"
-            "Candidate readings are anonymous.\n"
-            "Choose CANDIDATE_X, CANDIDATE_Y, THIRD_READING, or UNRESOLVED.\n"
-            "Cite visual evidence. Do not change a reading only to force agreement.\n"
-            "Write one JSON file. Dispatch is manual. No API is assumed.\n"
-        )
-        if challenge_contract is None:
-            return legacy
-        return (
-            legacy
-            + "For every decision, provide evidence_ref and evidence_assessment.\n"
-            + "evidence_ref must exactly copy one supplied reference for that dispute's\n"
-            + "group/crop/full-page fallback, including kind, evidence_id, and page_id.\n"
-            + "evidence_assessment is SUPPORTS_DECISION, INSUFFICIENT, or UNREADABLE.\n"
-            + "Use INSUFFICIENT or UNREADABLE when the cited evidence does not support\n"
-            + "your selected reading; matching another decision is not visual support.\n"
+        return challenge_instructions(
+            evidence_bound=challenge_contract == EVIDENCE_BOUND_CONTRACT
         )
     return (
         "Use the preserved visual readings. Do not replace diplomatic spelling.\n"
@@ -2002,6 +2240,11 @@ def _instructions(
         "Record the hypothesis, supporting and opposing evidence, sources, links,\n"
         "whether the original image was inspected, limitations, and confidence.\n"
         "Write one JSON file. Dispatch is manual. No API is assumed.\n"
+        "Copy schema_version, provider, provider_interface, task_id, job_id,\n"
+        "batch_id, document_id, attempt, source_bundle_sha256, and stage from\n"
+        "work_request.json. output_example.json already contains those values.\n"
+        "Do not omit provider_interface, job_id, batch_id, document_id, attempt,\n"
+        "or source_bundle_sha256.\n"
     )
 
 
@@ -2010,52 +2253,39 @@ def _schema_text(
 ) -> str:
     if stage == "first_pass":
         return first_pass_schema_text()
-    if stage == "challenge" and challenge_contract == EVIDENCE_BOUND_CONTRACT:
-        return (
-            json.dumps(
-                {
-                    "schema_version": "review-provider-output-v1",
-                    "stage": "challenge",
-                    "round_contract": EVIDENCE_BOUND_CONTRACT,
-                    "note": "Return data only. Do not include commands.",
-                    "decisions": {
-                        "required_for_every_selected_dispute": True,
-                        "fields": {
-                            "dispute_id": "exact required decision ID",
-                            "decision": [
-                                "CANDIDATE_X",
-                                "CANDIDATE_Y",
-                                "THIRD_READING",
-                                "UNRESOLVED",
-                            ],
-                            "third_reading": "required only for THIRD_READING; preserve exact text",
-                            "visual_evidence": "non-empty evidence statement",
-                            "evidence_ref": {
-                                "kind": ["GROUP", "CROP", "FULL_PAGE_FALLBACK"],
-                                "evidence_id": "exactly as published for this dispute",
-                                "page_id": "exactly as published for this dispute",
-                            },
-                            "evidence_assessment": [
-                                "SUPPORTS_DECISION",
-                                "INSUFFICIENT",
-                                "UNREADABLE",
-                            ],
-                        },
-                    },
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
+    if stage == "challenge":
+        return challenge_schema_text(
+            evidence_bound=challenge_contract == EVIDENCE_BOUND_CONTRACT
         )
     return (
         json.dumps(
             {
                 "schema_version": "review-provider-output-v1",
                 "stage": stage,
-                "note": "Return data only. Do not include commands.",
+                "note": (
+                    "Return one JSON object and no other fields. "
+                    "Copy every identity field from work_request.json. "
+                    "output_example.json is a shape template with those values already copied. "
+                    "Do not include commands."
+                ),
+                "required_top_level_fields": {
+                    "schema_version": "review-provider-output-v1",
+                    "provider": "gpt or grok, copied from work_request.json",
+                    "provider_interface": (
+                        "GPT_WORK when provider is gpt; GROK when provider is grok; "
+                        "copy from work_request.json"
+                    ),
+                    "task_id": "copy from work_request.json",
+                    "job_id": "copy from work_request.json",
+                    "batch_id": "copy from work_request.json",
+                    "document_id": "copy from work_request.json",
+                    "attempt": "copy from work_request.json",
+                    "source_bundle_sha256": "copy from work_request.json",
+                    "stage": stage,
+                },
             },
             indent=2,
+            sort_keys=True,
         )
         + "\n"
     )
@@ -2093,6 +2323,58 @@ def _read_source_evidence(
         model,
         original_sha256=sha256_bytes(data),
     )
+
+
+def _read_provider_output(
+    output: Path,
+    *,
+    batch_id: str,
+    provider: str,
+    stage: str,
+    document: DocumentReviewState,
+    runtime: ProviderRuntime,
+    round_index: int,
+    doc_root: Path,
+) -> ProviderFile:
+    """Parse one allowlisted output. This does not record acceptance or rejection."""
+
+    assert_allowlisted_output_dir(output.parent)
+    if not output.is_file():
+        raise ReviewResultMissing(f"missing provider output {output.name}")
+    return _parse_provider_file(
+        output,
+        batch_id=batch_id,
+        provider=provider,
+        stage=stage,
+        document=document,
+        runtime=runtime,
+        round_index=round_index,
+        doc_root=doc_root,
+    )
+
+
+def _preflight_report(
+    *,
+    stage: str,
+    provider: str,
+    round_index: int,
+    attempt: int | None,
+    relative: str | None,
+    eligible: bool,
+    eligibility: str,
+    failures: list[dict[str, str]],
+) -> dict[str, object]:
+    return {
+        "output_valid": not failures,
+        "eligible_for_acceptance": eligible,
+        "eligibility": eligibility,
+        "stage": stage,
+        "provider": provider,
+        "round_index": round_index,
+        "attempt": attempt,
+        "output_relative_path": relative,
+        "failures": failures,
+    }
 
 
 def _parse_provider_file(
@@ -2217,6 +2499,9 @@ def _parse_provider_file(
                 "schema",
                 "a historical legacy round cannot be silently upgraded to evidence-bound output",
             )
+    placeholder = template_placeholder_problem(model.model_dump(mode="json"))
+    if placeholder is not None:
+        raise ReviewOutputRejected("schema", placeholder)
     return model
 
 
@@ -2404,25 +2689,60 @@ def _published_challenge_scopes(
                 "published provider task evidence is missing or inconsistent"
             )
         grouped_note = _grouped_challenge_note() if published.groups is not None else ""
-        expected_instructions = (
-            _instructions("challenge", challenge_contract=expected_contract)
-            + grouped_note
-        ).encode("utf-8")
+        evidence_bound = expected_contract == EVIDENCE_BOUND_CONTRACT
         instruction = task_root / f"instructions_{task_provider}.txt"
         schema = task_root / "output_schema.json"
         request = task_root / "work_request.json"
-        if (
-            not instruction.is_file()
-            or instruction.read_bytes() != expected_instructions
-            or not schema.is_file()
-            or schema.read_bytes()
-            != _schema_text("challenge", challenge_contract=expected_contract).encode(
-                "utf-8"
+        example = task_root / "output_example.json"
+        instruction_text = _published_task_text(instruction)
+        schema_text = _published_task_text(schema)
+        contract_pair = matching_challenge_contract_pair(
+            instruction_text,
+            schema_text,
+            evidence_bound=evidence_bound,
+            grouped_note=grouped_note,
+        )
+        recognized_instructions = {
+            item + grouped_note
+            for item in recognized_challenge_instruction_texts(
+                evidence_bound=evidence_bound
             )
-            or not request.is_file()
+        }
+        recognized_schemas = recognized_challenge_schema_texts(
+            evidence_bound=evidence_bound
+        )
+        if (
+            contract_pair is None
+            and instruction_text in recognized_instructions
+            and schema_text in recognized_schemas
         ):
             raise ReviewIntegrityError(
+                "published provider task mixes contract versions"
+            )
+        if contract_pair is None or not request.is_file():
+            raise ReviewIntegrityError(
                 "published provider task contract is missing or inconsistent"
+            )
+        if contract_pair == "current":
+            request_text = _published_task_text(request)
+            try:
+                published_request = WorkRequest.model_validate_json(request_text)
+            except ValidationError as exc:
+                raise ReviewIntegrityError(
+                    "published work request is not readable"
+                ) from exc
+            expected_example = render_output_example(
+                published_request,
+                challenge_input=(input_root / "disputes.json").read_bytes(),
+                evidence_bound=evidence_bound,
+            )
+            if not example.is_file() or example.read_bytes() != expected_example:
+                raise ReviewIntegrityError(
+                    "published output example is missing or does not match the work request"
+                )
+        elif example.exists():
+            raise ReviewIntegrityError(
+                "a historical challenge task cannot gain an output example"
             )
     return published, scopes
 
@@ -2690,7 +3010,482 @@ def _first_pass_allowlist(
     return files
 
 
-def _write_allowlisted(task_dir: Path, files: dict[str, bytes]) -> None:
+def _preserve_rejected_task(
+    task_dir: Path, snapshot: Path, *, rejected_attempt: int
+) -> None:
+    """Copy the rejected attempt's task bundle once. Do not copy provider output."""
+
+    live_request = task_dir / "work_request.json"
+    if not live_request.is_file():
+        raise ReviewIntegrityError("recovery requires the rejected attempt's task")
+    preserved_request = snapshot / "work_request.json"
+    if preserved_request.is_file():
+        preserved = WorkRequest.model_validate_json(preserved_request.read_bytes())
+        if preserved.attempt != rejected_attempt:
+            raise ReviewIntegrityError(
+                "preserved task does not match the rejected attempt"
+            )
+        return
+    live = WorkRequest.model_validate_json(live_request.read_bytes())
+    if live.attempt != rejected_attempt:
+        raise ReviewIntegrityError("rejected attempt task was not preserved")
+    temporary = snapshot.with_name(snapshot.name + ".partial")
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    for item in sorted(task_dir.rglob("*")):
+        if not item.is_file():
+            continue
+        relative = item.relative_to(task_dir)
+        _write_if_same(temporary / relative, item.read_bytes())
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(temporary, snapshot)
+
+
+def _task_install_paths(task_dir: Path) -> tuple[Path, Path]:
+    return (
+        task_dir.with_name(task_dir.name + ".next"),
+        task_dir.with_name(task_dir.name + ".previous"),
+    )
+
+
+def _task_file_bytes(root: Path) -> dict[str, bytes]:
+    if not root.is_dir():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _utf8_text(path: Path) -> str | None:
+    """Return file text, or None when the bytes are not UTF-8.
+
+    Callers treat None as an invalid task directory. The file is not rewritten.
+    """
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _published_task_text(path: Path) -> str:
+    """Read a published task file without repairing its bytes.
+
+    A missing file is an empty contract. Invalid UTF-8 is an integrity error.
+    """
+
+    if not path.is_file():
+        return ""
+    text = _utf8_text(path)
+    if text is None:
+        raise ReviewIntegrityError("published provider task text is not valid UTF-8")
+    return text
+
+
+def _task_text_encoding_problem(task_dir: Path) -> bool:
+    """True when a required task text file exists but is not UTF-8."""
+
+    provider = task_dir.name
+    if provider.endswith(".previous"):
+        provider = provider[: -len(".previous")]
+    elif provider.endswith(".next"):
+        provider = provider[: -len(".next")]
+    required = (
+        task_dir / f"instructions_{provider}.txt",
+        task_dir / "README.txt",
+        task_dir / "output_schema.json",
+    )
+    return any(path.is_file() and _utf8_text(path) is None for path in required)
+
+
+_ATTEMPT_IDENTITY_FILES = frozenset({"work_request.json", "output_example.json"})
+
+
+def _first_pass_directory_is_consistent(task_dir: Path, request: WorkRequest) -> bool:
+    """True when a first-pass task directory matches its own work request."""
+
+    instruction = task_dir / f"instructions_{request.provider}.txt"
+    schema = task_dir / "output_schema.json"
+    readme = task_dir / "README.txt"
+    example = task_dir / "output_example.json"
+    if not all(path.is_file() for path in (instruction, schema, readme, example)):
+        return False
+    instruction_text = _utf8_text(instruction)
+    schema_text = _utf8_text(schema)
+    readme_text = _utf8_text(readme)
+    if instruction_text is None or schema_text is None or readme_text is None:
+        return False
+    if (
+        instruction_text != _instructions("first_pass")
+        or schema_text != first_pass_schema_text()
+        or readme_text != _sandbox_note()
+    ):
+        return False
+    try:
+        rendered = render_output_example(request)
+    except (OSError, ValidationError, ValueError):
+        return False
+    if example.read_bytes() != rendered:
+        return False
+    source_input = task_dir.parents[2] / "input"
+    if _task_file_bytes(task_dir / "input") != _task_file_bytes(source_input):
+        return False
+    expected = {
+        instruction.name,
+        "work_request.json",
+        "output_schema.json",
+        "README.txt",
+        "output_example.json",
+        *(f"input/{name}" for name in _task_file_bytes(source_input)),
+    }
+    return set(_task_file_bytes(task_dir)) == expected
+
+
+def _research_input_matches_contract(payload: bytes) -> bool:
+    """True when ``payload`` is the research input this controller publishes.
+
+    Invalid UTF-8 and an unhashable reading label are a contract mismatch.
+    The bytes are not rewritten.
+    """
+
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    readings = parsed.get("visual_readings")
+    if (
+        set(parsed)
+        != {
+            "archive_transcription_included",
+            "diplomatic_spelling_is_fixed",
+            "schema_version",
+            "target_transcription_cannot_corroborate_itself",
+            "visual_readings",
+        }
+        or parsed["schema_version"] != "review-research-input-v1"
+        or parsed["archive_transcription_included"] is not False
+        or parsed["target_transcription_cannot_corroborate_itself"] is not True
+        or parsed["diplomatic_spelling_is_fixed"] is not True
+        or not isinstance(readings, list)
+    ):
+        return False
+    for item in readings:
+        if not isinstance(item, dict) or set(item) != {"label", "pages"}:
+            return False
+        label = item["label"]
+        if (
+            not isinstance(label, str)
+            or label not in {"visual_a", "visual_b"}
+            or not isinstance(item["pages"], list)
+        ):
+            return False
+    return True
+
+
+def _research_directory_is_consistent(task_dir: Path, request: WorkRequest) -> bool:
+    """True when a research task directory matches its own work request.
+
+    The published research input is immutable. A later attempt may replace
+    only ``work_request.json`` and ``output_example.json``.
+    """
+
+    if request.round_index != 0:
+        return False
+    instruction = task_dir / f"instructions_{request.provider}.txt"
+    schema = task_dir / "output_schema.json"
+    readme = task_dir / "README.txt"
+    example = task_dir / "output_example.json"
+    if not all(path.is_file() for path in (instruction, schema, readme, example)):
+        return False
+    instruction_text = _utf8_text(instruction)
+    schema_text = _utf8_text(schema)
+    readme_text = _utf8_text(readme)
+    if instruction_text is None or schema_text is None or readme_text is None:
+        return False
+    if (
+        instruction_text != _instructions("research")
+        or schema_text != _schema_text("research")
+        or readme_text != _sandbox_note()
+    ):
+        return False
+    stage_root = task_dir.parent.parent
+    published_input = stage_root / "input"
+    task_input = _task_file_bytes(task_dir / "input")
+    if task_input != _task_file_bytes(published_input):
+        return False
+    research_input = task_input.get("research_request.json")
+    if research_input is None or not _research_input_matches_contract(research_input):
+        return False
+    try:
+        rendered = render_output_example(request)
+    except (OSError, ValidationError, ValueError):
+        return False
+    if example.read_bytes() != rendered:
+        return False
+    expected = {
+        instruction.name,
+        "work_request.json",
+        "output_schema.json",
+        "README.txt",
+        "output_example.json",
+        *(f"input/{name}" for name in task_input),
+    }
+    return set(_task_file_bytes(task_dir)) == expected
+
+
+def _only_attempt_identity_changed(task_dir: Path, files: dict[str, bytes]) -> bool:
+    """True when an existing task changes only its request and example.
+
+    Instructions, schema, README, and evidence bytes stay on ``_write_if_same``.
+    A historical task whose file set differs does not take this path.
+    """
+
+    if not task_dir.is_dir():
+        return False
+    existing = _task_file_bytes(task_dir)
+    if set(existing) != set(files):
+        return False
+    if any(
+        name not in _ATTEMPT_IDENTITY_FILES and existing[name] != payload
+        for name, payload in files.items()
+    ):
+        return False
+    return any(
+        existing[name] != files[name]
+        for name in _ATTEMPT_IDENTITY_FILES
+        if name in files
+    )
+
+
+def _task_directory_is_consistent(task_dir: Path, *, evidence_bound: bool) -> bool:
+    """True when this directory is one complete historical or current task.
+
+    ``task_dir`` may be the live directory or a ``.next`` / ``.previous`` sibling.
+    The provider name comes from the work request, so the sibling names still match.
+    Invalid UTF-8 in a required text file makes the directory inconsistent.
+    Those bytes are left unchanged.
+    """
+
+    request_path = task_dir / "work_request.json"
+    if not request_path.is_file():
+        return False
+    try:
+        request = WorkRequest.model_validate_json(request_path.read_bytes())
+    except (ValidationError, UnicodeDecodeError):
+        return False
+    if task_dir.name not in {
+        request.provider,
+        f"{request.provider}.next",
+        f"{request.provider}.previous",
+    }:
+        return False
+    if request.stage == "first_pass":
+        return _first_pass_directory_is_consistent(task_dir, request)
+    if request.stage == "research":
+        return _research_directory_is_consistent(task_dir, request)
+    if request.stage != "challenge":
+        return False
+    stage_root = task_dir.parent.parent
+    disputes_path = stage_root / "input" / "disputes.json"
+    if not disputes_path.is_file():
+        return False
+    try:
+        published = AnonymousChallengeFile.model_validate_json(
+            disputes_path.read_bytes()
+        )
+    except (ValidationError, UnicodeDecodeError):
+        return False
+    if _task_file_bytes(task_dir / "input") != _task_file_bytes(stage_root / "input"):
+        return False
+    instruction = task_dir / f"instructions_{request.provider}.txt"
+    schema = task_dir / "output_schema.json"
+    readme = task_dir / "README.txt"
+    if not (instruction.is_file() and schema.is_file() and readme.is_file()):
+        return False
+    readme_text = _utf8_text(readme)
+    instruction_text = _utf8_text(instruction)
+    schema_text = _utf8_text(schema)
+    if readme_text is None or instruction_text is None or schema_text is None:
+        return False
+    if readme_text != _sandbox_note():
+        return False
+    grouped_note = _grouped_challenge_note() if published.groups is not None else ""
+    pair = matching_challenge_contract_pair(
+        instruction_text,
+        schema_text,
+        evidence_bound=evidence_bound,
+        grouped_note=grouped_note,
+    )
+    if pair is None:
+        return False
+    example = task_dir / "output_example.json"
+    expected = {
+        instruction.name,
+        "work_request.json",
+        "output_schema.json",
+        "README.txt",
+        *(f"input/{name}" for name in _task_file_bytes(stage_root / "input")),
+    }
+    if pair == "current":
+        try:
+            rendered = render_output_example(
+                request,
+                challenge_input=disputes_path.read_bytes(),
+                evidence_bound=evidence_bound,
+            )
+        except (OSError, ValidationError, ValueError):
+            return False
+        if not example.is_file() or example.read_bytes() != rendered:
+            return False
+        expected.add("output_example.json")
+    elif example.exists():
+        return False
+    actual = set(_task_file_bytes(task_dir))
+    return actual == expected
+
+
+def _discard_corrupt_task(task_dir: Path) -> None:
+    corrupt = task_dir.with_name(task_dir.name + ".corrupt")
+    if corrupt.exists():
+        shutil.rmtree(corrupt)
+
+
+def _discard_install_leftovers(task_dir: Path, staging: Path, previous: Path) -> None:
+    if staging.exists():
+        shutil.rmtree(staging)
+    if previous.exists():
+        shutil.rmtree(previous)
+    _discard_corrupt_task(task_dir)
+
+
+def _restore_previous_task(task_dir: Path, previous: Path) -> None:
+    """Put a verified previous directory back without deleting it first."""
+
+    corrupt = task_dir.with_name(task_dir.name + ".corrupt")
+    if corrupt.exists():
+        shutil.rmtree(corrupt)
+    os.rename(task_dir, corrupt)
+    os.rename(previous, task_dir)
+    shutil.rmtree(corrupt)
+
+
+def _resume_pending_task_install(task_dir: Path, *, evidence_bound: bool) -> None:
+    """Resume a swap only when ``.next`` or ``.previous`` was left behind.
+
+    A live task with no sibling is validated as it stands. A mixed contract
+    stays visible to that check instead of being reported as an unfinished swap.
+    """
+
+    staging, previous = _task_install_paths(task_dir)
+    if staging.exists() or previous.exists():
+        _resume_incomplete_task_install(task_dir, evidence_bound=evidence_bound)
+
+
+def _resume_incomplete_task_install(task_dir: Path, *, evidence_bound: bool) -> None:
+    """Finish a crashed task-directory swap without mixing the two contracts.
+
+    A live directory is kept only after its instruction/schema pair, example,
+    and evidence tree check out. Until that check passes, ``.previous`` stays
+    on disk and replaces the live directory when it is the complete copy.
+    A partial ``.next`` tree is discarded once one complete directory is in
+    place. The archived attempt under ``attempts/`` is not touched.
+    """
+
+    staging, previous = _task_install_paths(task_dir)
+    if previous.is_dir() and _task_text_encoding_problem(previous):
+        raise ReviewIntegrityError(
+            "previous task directory contains invalid UTF-8 and was left in place"
+        )
+    if task_dir.exists():
+        if _task_directory_is_consistent(task_dir, evidence_bound=evidence_bound):
+            _discard_install_leftovers(task_dir, staging, previous)
+            return
+        if previous.is_dir() and _task_directory_is_consistent(
+            previous, evidence_bound=evidence_bound
+        ):
+            _restore_previous_task(task_dir, previous)
+            if staging.exists():
+                shutil.rmtree(staging)
+            return
+        raise ReviewIntegrityError(
+            "provider task directory is incomplete; the previous directory was left in place"
+        )
+    if previous.is_dir() and staging.is_dir():
+        if _task_directory_is_consistent(staging, evidence_bound=evidence_bound):
+            os.rename(staging, task_dir)
+            shutil.rmtree(previous)
+            _discard_corrupt_task(task_dir)
+            return
+        if _task_directory_is_consistent(previous, evidence_bound=evidence_bound):
+            os.rename(previous, task_dir)
+            shutil.rmtree(staging)
+            _discard_corrupt_task(task_dir)
+            return
+        raise ReviewIntegrityError(
+            "provider task directory is missing; neither replacement is a complete task"
+        )
+    if previous.is_dir():
+        if not _task_directory_is_consistent(previous, evidence_bound=evidence_bound):
+            raise ReviewIntegrityError(
+                "provider task directory is missing and its previous copy is incomplete"
+            )
+        os.rename(previous, task_dir)
+        _discard_corrupt_task(task_dir)
+        return
+    if staging.is_dir():
+        if not _task_directory_is_consistent(staging, evidence_bound=evidence_bound):
+            raise ReviewIntegrityError(
+                "provider task directory is missing and its replacement is incomplete"
+            )
+        os.rename(staging, task_dir)
+        _discard_corrupt_task(task_dir)
+        return
+    raise ReviewIntegrityError("provider task directory is missing")
+
+
+def _install_task_bundle(
+    task_dir: Path, files: dict[str, bytes], *, evidence_bound: bool
+) -> None:
+    """Replace a task directory only after the new tree is complete.
+
+    In-place replacement can leave the current schema without its example.
+    The contract check then refuses the retry before the ledger commit.
+    """
+
+    _resume_incomplete_task_install(task_dir, evidence_bound=evidence_bound)
+    if not task_dir.is_dir():
+        raise ReviewIntegrityError("provider task directory is missing")
+    staging, previous = _task_install_paths(task_dir)
+    for relative, payload in files.items():
+        _write_if_same(staging / relative, payload)
+    actual = {
+        path.relative_to(staging).as_posix()
+        for path in staging.rglob("*")
+        if path.is_file()
+    }
+    if actual != set(files):
+        raise ReviewIntegrityError("task bundle contains a file outside the allowlist")
+    os.rename(task_dir, previous)
+    os.rename(staging, task_dir)
+    shutil.rmtree(previous)
+
+
+def _write_allowlisted(
+    task_dir: Path,
+    files: dict[str, bytes],
+    *,
+    replace_contract: bool = False,
+    evidence_bound: bool = False,
+) -> None:
+    if replace_contract or _only_attempt_identity_changed(task_dir, files):
+        # work_request.json and output_example.json carry the same attempt.
+        # Replacing one before the other can persist a mixed identity.
+        _install_task_bundle(task_dir, files, evidence_bound=evidence_bound)
+        return
     for relative, payload in files.items():
         destination = task_dir / relative
         if relative == "work_request.json":

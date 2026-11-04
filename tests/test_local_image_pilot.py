@@ -104,6 +104,7 @@ def test_prepare_publishes_independent_tasks_without_a_seal(tmp_path: Path) -> N
             f"instructions_{provider}.txt",
             "work_request.json",
             "output_schema.json",
+            "output_example.json",
             "README.txt",
             "input/source_manifest.json",
             "input/page_001_original.png",

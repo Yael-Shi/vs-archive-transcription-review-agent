@@ -102,6 +102,14 @@ def first_pass_instruction_note() -> str:
         "Lines belong inside each region. A line is line_id plus text.\n"
         "An unreadable span is region_id plus text_marker.\n"
         "Do not add a field that output_schema.json does not name.\n"
+        "Copy schema_version, provider, provider_interface, task_id, job_id,\n"
+        "batch_id, document_id, attempt, source_bundle_sha256, and stage from\n"
+        "work_request.json. output_example.json already contains those values.\n"
+        "provider_interface is copied from work_request.json. It is GPT_WORK or GROK.\n"
+        "Do not omit provider_interface, job_id, batch_id, document_id, attempt,\n"
+        "or source_bundle_sha256. A missing field is invalid output.\n"
+        "output_example.json is a shape template. Replace its template pages\n"
+        "with your transcription. Do not submit the template unchanged.\n"
     )
 
 

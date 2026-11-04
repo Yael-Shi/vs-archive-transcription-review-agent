@@ -1,8 +1,9 @@
 """Local ``review-next`` operations for an already sealed batch.
 
-These commands prepare review work, inspect status, accept a dropped provider
-file, explicitly close the challenge stage, and finalize a document. They do
-not scan VS Archive, open a socket, or write a sealed bundle.
+These commands prepare review work, inspect status, validate a dropped
+provider file without writing state, accept that file, recover one invalid
+challenge attempt, explicitly close the challenge stage, and finalize a
+document. They do not scan VS Archive, open a socket, or write a sealed bundle.
 """
 
 from __future__ import annotations
@@ -14,7 +15,11 @@ from pathlib import Path
 from transcription_review_agent.errors import ConfigError
 from transcription_review_agent.review.config import load_review_config
 from transcription_review_agent.review.controller import CLOSURE_MODES, ReviewController
-from transcription_review_agent.review.errors import ReviewPolicyError, ReviewUsageError
+from transcription_review_agent.review.errors import (
+    ReviewOutputRejected,
+    ReviewPolicyError,
+    ReviewUsageError,
+)
 
 
 def review_next(config: object | None = None, argv: list[str] | None = None) -> None:
@@ -78,6 +83,46 @@ def review_next(config: object | None = None, argv: list[str] | None = None) -> 
             round_index=args.round_index,
         )
         return
+    if args.operation == "validate":
+        if args.provider is None:
+            raise ReviewUsageError(
+                "validate requires --provider. No VS Archive request is made."
+            )
+        report = controller.validate_output(
+            args.batch_id,
+            args.document_id,
+            args.provider,
+            stage=args.stage,
+            round_index=args.round_index,
+        )
+        print(json.dumps(report, sort_keys=True))
+        if not report["output_valid"]:
+            failure = report["failures"]
+            assert isinstance(failure, list) and failure
+            first = failure[0]
+            assert isinstance(first, dict)
+            raise ReviewOutputRejected(str(first["reason"]), str(first["message"]))
+        return
+    if args.operation == "recover-invalid-output":
+        if args.provider is None:
+            raise ReviewUsageError(
+                "recover-invalid-output requires --provider. "
+                "No VS Archive request is made."
+            )
+        if args.stage != "challenge":
+            raise ReviewUsageError(
+                "recover-invalid-output requires --stage challenge. "
+                "No VS Archive request is made."
+            )
+        path = controller.recover_invalid_output(
+            args.batch_id,
+            args.document_id,
+            args.provider,
+            stage=args.stage,
+            round_index=args.round_index,
+        )
+        print(path)
+        return
     if args.operation == "close-challenge":
         if args.closure_mode is None or args.reason is None:
             raise ReviewUsageError(
@@ -133,7 +178,15 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="review-next", add_help=False)
     parser.add_argument(
         "operation",
-        choices=("prepare", "status", "accept", "close-challenge", "finalize"),
+        choices=(
+            "prepare",
+            "status",
+            "validate",
+            "accept",
+            "recover-invalid-output",
+            "close-challenge",
+            "finalize",
+        ),
     )
     parser.add_argument("--batches-dir", required=True)
     parser.add_argument("--reviews-dir", required=True)

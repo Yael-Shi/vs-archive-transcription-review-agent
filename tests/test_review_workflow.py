@@ -888,6 +888,7 @@ def test_first_pass_task_uses_a_positive_allowlist(tmp_path: Path) -> None:
         "README.txt",
         "instructions_gpt.txt",
         "output_schema.json",
+        "output_example.json",
         "work_request.json",
         "input/source_manifest.json",
         "input/page_001.png",
