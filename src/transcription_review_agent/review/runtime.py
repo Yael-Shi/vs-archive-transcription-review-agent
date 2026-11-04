@@ -10,7 +10,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Literal, Sequence, Union
+from typing import Annotated, Final, Literal, Sequence, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
@@ -27,13 +27,20 @@ from transcription_review_agent.review.models import (
     SourceEvidence,
     UnresolvedDispute,
 )
-from transcription_review_agent.review.paths import batch_root, controller_dir
+from transcription_review_agent.review.paths import (
+    batch_root,
+    controller_dir,
+    output_relative_path,
+)
 
 Sha256 = Annotated[str, Field(pattern=SHA256_PATTERN)]
 BatchId = Annotated[str, Field(pattern=BATCH_ID_PATTERN)]
 ProviderName = Literal["gpt", "grok"]
 StageName = Literal["first_pass", "challenge", "research"]
 ChallengeContract = Literal["EVIDENCE_BOUND_V1"]
+# One new attempt after INVALID_OUTPUT, per provider, per challenge round.
+# The rejected attempt stays terminal. A second rejection is not recovered.
+MAX_INVALID_OUTPUT_RECOVERIES: Final = 1
 
 INITIAL_UPDATED_AT = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -73,6 +80,9 @@ class ProviderRuntime(BaseModel):
     coverage: list[PageCoverageSnapshot] = Field(default_factory=list)
     challenge_decisions: list[ChallengeDecision] = Field(default_factory=list)
     source_evidence: list[SourceEvidence] = Field(default_factory=list)
+    # Absent on a checkpoint written before recovery existed. Replay of those
+    # ledgers leaves this at zero, so the checkpoint still matches.
+    invalid_output_recoveries: int = Field(default=0, ge=0)
 
 
 class ChallengeRoundState(BaseModel):
@@ -872,6 +882,55 @@ def _apply_opened(
     )
 
 
+def _recovered_attempt(
+    document: DocumentReviewState,
+    runtime: ProviderRuntime,
+    entry: WorkPublishedEntry,
+) -> int:
+    """Allow one new challenge attempt after INVALID_OUTPUT.
+
+    The rejected attempt is unchanged: its rejection event stays in the ledger,
+    and this publication must carry a new task id, job id, and output path.
+    Returns the recovery count to store on the new attempt.
+    """
+
+    if entry.stage != "challenge":
+        raise ReviewIntegrityError("only a challenge attempt can be recovered")
+    if document.finalized:
+        raise ReviewIntegrityError(
+            "a finalized review cannot recover a challenge attempt"
+        )
+    challenge = _require_round(document, entry.round_index)
+    if challenge.reconciled:
+        raise ReviewIntegrityError("a reconciled challenge round cannot be recovered")
+    if runtime.invalid_output_recoveries >= MAX_INVALID_OUTPUT_RECOVERIES:
+        raise ReviewIntegrityError("invalid-output recovery limit is already spent")
+    if entry.attempt != runtime.attempt + 1:
+        raise ReviewIntegrityError("published attempt does not follow the provider")
+    expected_task = (
+        f"{entry.batch_id}:{entry.document_id}:{entry.stage}:"
+        f"r{entry.round_index}:{entry.provider}:a{entry.attempt}"
+    )
+    if entry.task_id != expected_task or entry.job_id != f"job:{expected_task}":
+        raise ReviewIntegrityError(
+            "a recovered attempt must use its own task and job id"
+        )
+    if (
+        entry.task_id == runtime.task_id
+        or entry.job_id == runtime.job_id
+        or entry.output_relative_path == runtime.output_relative_path
+    ):
+        raise ReviewIntegrityError(
+            "a recovered attempt must not reuse the rejected attempt identity"
+        )
+    expected_output = output_relative_path(
+        entry.stage, entry.provider, entry.round_index, entry.attempt
+    )
+    if entry.output_relative_path != expected_output:
+        raise ReviewIntegrityError("a recovered attempt must use its own output path")
+    return runtime.invalid_output_recoveries + 1
+
+
 def _apply_published(
     state: ReviewBatchState, entry: WorkPublishedEntry
 ) -> ReviewBatchState:
@@ -888,18 +947,22 @@ def _apply_published(
         and runtime.task_id == entry.task_id
     ):
         raise ReviewIntegrityError("duplicate work publication")
-    if runtime.status not in {
+    recoveries = runtime.invalid_output_recoveries
+    if runtime.status is ProviderStatus.INVALID_OUTPUT:
+        recoveries = _recovered_attempt(document, runtime, entry)
+    elif runtime.status not in {
         ProviderStatus.NOT_STARTED,
         ProviderStatus.RETRYABLE_FAILURE,
     }:
         raise ReviewIntegrityError("work cannot be published from this provider status")
-    expected = (
-        1 if runtime.status is ProviderStatus.NOT_STARTED else runtime.attempt + 1
-    )
-    if entry.attempt != expected:
-        raise ReviewIntegrityError("published attempt does not follow the provider")
-    if runtime.transient_failures > 1:
-        raise ReviewIntegrityError("transient retry cap is already spent")
+    else:
+        expected = (
+            1 if runtime.status is ProviderStatus.NOT_STARTED else runtime.attempt + 1
+        )
+        if entry.attempt != expected:
+            raise ReviewIntegrityError("published attempt does not follow the provider")
+        if runtime.transient_failures > 1:
+            raise ReviewIntegrityError("transient retry cap is already spent")
     updated = runtime.model_copy(
         update={
             "status": ProviderStatus.AWAITING_MANUAL_DISPATCH,
@@ -907,6 +970,7 @@ def _apply_published(
             "task_id": entry.task_id,
             "job_id": entry.job_id,
             "output_relative_path": entry.output_relative_path,
+            "invalid_output_recoveries": recoveries,
         }
     )
     document = _replace_provider(document, entry.stage, entry.round_index, updated)
