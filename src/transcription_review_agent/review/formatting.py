@@ -41,7 +41,7 @@ from transcription_review_agent.review.models import (
     ReconciledDecision,
     RecordedAlternativeReading,
 )
-from transcription_review_agent.review.spans import words
+from transcription_review_agent.review.spans import note_words_in, words
 
 MISSING_SIDE = "∅"
 ILLEGIBLE_DISPLAY = "[illegible]"
@@ -132,15 +132,19 @@ def selected_span_text(
 ) -> str | None:
     """The span text a selecting decision may emit, or ``None``.
 
-    A supported X or Y emits that provider's exact aligned span (``left`` or
-    ``right``), and only when ``selected_reading`` is exactly the dispute
-    side A3 stored. A third reading emits that exact string. No other string
-    is invented. ``None`` means the span stays an alternative.
+    A supported X, Y, or third reading replaces the aligned line only when
+    the dispute text is that entire line on both sides. A fragment such as
+    ``school`` does not stand in for the rest of the line. A full-line third
+    reading emits that exact string. No other string is invented. ``None``
+    means both line readings stay visible.
     """
 
     if not decision_selects_dispute(decision, dispute):
         return None
     assert decision is not None
+    covers_line = dispute.gpt_text == left and dispute.grok_text == right
+    if not covers_line:
+        return None
     if decision.decision == "THIRD_READING":
         if decision.result_class == "AUTOMATICALLY_SUPPORTED":
             return decision.selected_reading
@@ -304,12 +308,31 @@ def _contained_in_differing_alignment(
     pair: tuple[str, str],
     alignment: tuple[str, str],
 ) -> bool:
-    """A note already visible inside two different aligned sides is not repeated."""
+    """A note already visible in the aligned text is not printed again.
+
+    A two-sided note is skipped when each side already sits inside a
+    differing aligned line. A one-sided note is skipped when its text is
+    already on the corresponding aligned side, including when both aligned
+    sides are the same line.
+    """
 
     left, right = pair
     aligned_left, aligned_right = alignment
-    if aligned_left == aligned_right or left == "" or right == "":
-        return False
     if pair == alignment:
         return True
+    if left == "" and right == "":
+        return False
+    if left == "" or right == "":
+        note, side = (left, aligned_left) if right == "" else (right, aligned_right)
+        return _note_already_in_side(note, side)
+    if aligned_left == aligned_right:
+        return False
     return left in aligned_left and right in aligned_right
+
+
+def _note_already_in_side(note: str, side: str) -> bool:
+    """Whether ``note`` is the side or its words already occur there in order."""
+
+    if note == side:
+        return True
+    return note_words_in(side, note)

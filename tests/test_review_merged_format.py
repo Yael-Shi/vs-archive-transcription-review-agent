@@ -488,7 +488,7 @@ def test_cancellations_and_insertions_keep_provider_text() -> None:
         noted,
         [],
     )
-    assert text == "@@ page_001\nyouth and the middle\n[and / ∅]\n"
+    assert text == "@@ page_001\nyouth and the middle\n"
     assert "⟦and⟧" not in text
     assert "[deleted:" not in text
     left_note = "line a\nline b"
@@ -726,8 +726,255 @@ def test_several_disputes_on_one_span_are_not_duplicated() -> None:
         [],
     )
     assert both.count(shared) == 1
-    assert both.count("[and / ∅]") == 1
+    assert both.count("[and / ∅]") == 0
     assert both.count("[middle / centre]") == 1
+
+
+def test_fragment_decision_keeps_both_line_readings() -> None:
+    left = (
+        "Egyptian Hymn were played by the philharmonic of the Alexandria Jewish school."
+    )
+    right = "Egyptian Hymn were played by the philharmonic of the Alexandria Jewish School ~"
+    fragment = _dispute(
+        DisputeCategory.CANCELLATION_OR_INSERTION,
+        "school",
+        "",
+        dispute_id="dsp-school",
+    )
+    punctuation = _dispute(
+        DisputeCategory.PUNCTUATION,
+        left,
+        right,
+        dispute_id="dsp-school-punct",
+        substantive=False,
+    )
+    gpt = _output(_page(left))
+    grok = _output(_page(right), "grok")
+    comparison = _comparison(
+        gpt, grok, [fragment, punctuation], [_alignment(left, right)]
+    )
+    decision = _supported(fragment, "CANDIDATE_X", "school")
+    text = _render(gpt, grok, comparison, [decision])
+    assert text == f"@@ page_001\n[{left} / {right}]\n"
+    assert "[school / ∅]" not in text
+    assert decision.selected_reading == "school"
+
+
+def test_third_reading_replaces_only_a_full_line() -> None:
+    left = (
+        "Egyptian Hymn were played by the philharmonic of the Alexandria Jewish school."
+    )
+    right = (
+        "Egyptian Hymn were played by the philharmonic of the "
+        "Alexandria Jewish School ~"
+    )
+    fragment = _dispute(
+        DisputeCategory.CANCELLATION_OR_INSERTION,
+        "school",
+        "",
+        dispute_id="dsp-school-third",
+    )
+    gpt = _output(_page(left))
+    grok = _output(_page(right), "grok")
+    fragment_decision = _supported(
+        fragment, "THIRD_READING", "schoolhouse", third="schoolhouse"
+    )
+    fragment_text = _render(
+        gpt,
+        grok,
+        _comparison(gpt, grok, [fragment], [_alignment(left, right)]),
+        [fragment_decision],
+    )
+    assert fragment_text == f"@@ page_001\n[{left} / {right}]\n"
+    assert "schoolhouse" not in fragment_text
+
+    whole = _dispute(DisputeCategory.WORDING, left, right, dispute_id="dsp-school-line")
+    third = (
+        "Egyptian Hymn were played by the philharmonic of the Alexandria Jewish school"
+    )
+    whole_decision = _supported(whole, "THIRD_READING", third, third=third)
+    whole_text = _render(
+        gpt,
+        grok,
+        _comparison(gpt, grok, [whole], [_alignment(left, right)]),
+        [whole_decision],
+    )
+    assert whole_text == f"@@ page_001\n{third}\n"
+    assert "School ~" not in whole_text
+    assert whole_decision.selected_reading == third
+
+
+def test_full_line_decisions_still_replace_aghion_and_hazan() -> None:
+    aghion_left = (
+        "The biggest relevant school was that of the Jewish community, "
+        "Aslan school, built in the 20's of the last cent."
+    )
+    aghion_right = (
+        "The biggest & oldest schools [deleted: was] that of the Jewish community "
+        "Aghion Schools, built in the 70's of the last century"
+    )
+    aghion = _dispute(
+        DisputeCategory.NAME_OR_ENTITY,
+        aghion_left,
+        aghion_right,
+        dispute_id="dsp-aghion",
+    )
+    gpt = _output(_page(aghion_left))
+    grok = _output(_page(aghion_right), "grok")
+    aghion_text = _render(
+        gpt,
+        grok,
+        _comparison(gpt, grok, [aghion], [_alignment(aghion_left, aghion_right)]),
+        [_supported(aghion, "CANDIDATE_Y", aghion_right)],
+    )
+    assert aghion_text == f"@@ page_001\n{aghion_right}\n"
+    assert "Aslan school" not in aghion_text
+
+    hazan_left = (
+        "Rabbi Bekhor Eliahou Hazan (1878-1908), the Chief Rabbi of Alexandria "
+        "organized a committee for the"
+    )
+    hazan_right = (
+        "(Rabbi Bekhor Eliahou Hazan) (1888-1908), the Chief Rabbi of Alexandria "
+        "organized a committee for the"
+    )
+    hazan = _dispute(
+        DisputeCategory.NAME_OR_ENTITY,
+        hazan_left,
+        hazan_right,
+        dispute_id="dsp-hazan",
+    )
+    hazan_gpt = _output(_page(hazan_left))
+    hazan_grok = _output(_page(hazan_right), "grok")
+    hazan_text = _render(
+        hazan_gpt,
+        hazan_grok,
+        _comparison(
+            hazan_gpt,
+            hazan_grok,
+            [hazan],
+            [_alignment(hazan_left, hazan_right)],
+        ),
+        [_supported(hazan, "CANDIDATE_Y", hazan_right)],
+    )
+    assert hazan_text == f"@@ page_001\n{hazan_right}\n"
+    assert "1878-1908" not in hazan_text
+
+
+def test_one_sided_notes_already_in_the_line_are_not_repeated() -> None:
+    footnote_left = '1) For more information see next-year "Egyptian Jews" (hebrew)'
+    footnote_right = '1) For more information see Bat-Yeor "Egyptian Jews) (hebrew)'
+    footnote = _dispute(
+        DisputeCategory.NAME_OR_ENTITY,
+        footnote_left,
+        footnote_right,
+        dispute_id="dsp-footnote",
+    )
+    echo = _dispute(
+        DisputeCategory.CANCELLATION_OR_INSERTION,
+        footnote_left,
+        "",
+        dispute_id="dsp-footnote-echo",
+    )
+    gpt = _output(_page(footnote_left))
+    grok = _output(_page(footnote_right), "grok")
+    footnote_text = _render(
+        gpt,
+        grok,
+        _comparison(
+            gpt,
+            grok,
+            [footnote, echo],
+            [_alignment(footnote_left, footnote_right)],
+        ),
+        [],
+    )
+    assert footnote_text == f"@@ page_001\n[{footnote_left} / {footnote_right}]\n"
+    assert footnote_text.count(footnote_left) == 1
+    assert "[∅]" not in footnote_text
+
+    wars_left = (
+        "Important events took place in the Synagogues. "
+        "Enlisting of soldiers in the two world wars"
+    )
+    wars_right = (
+        "Important events took place in the (synagogues). "
+        "Enlisting of soldiers in the two world wars"
+    )
+    wars = _dispute(
+        DisputeCategory.WORDING, wars_left, wars_right, dispute_id="dsp-wars"
+    )
+    wars_note = _dispute(
+        DisputeCategory.CANCELLATION_OR_INSERTION,
+        "in the two world wars",
+        "",
+        dispute_id="dsp-wars-note",
+    )
+    wars_text = _render(
+        _output(_page(wars_left)),
+        _output(_page(wars_right), "grok"),
+        _comparison(
+            _output(_page(wars_left)),
+            _output(_page(wars_right), "grok"),
+            [wars, wars_note],
+            [_alignment(wars_left, wars_right)],
+        ),
+        [],
+    )
+    assert wars_text == f"@@ page_001\n[{wars_left} / {wars_right}]\n"
+    assert "[in the two world wars / ∅]" not in wars_text
+
+    egypt_lines = (
+        (
+            "1947. In 1948 he was expelled from Egypt for Zionist activity.",
+            "1947. In 1948 he was expelled from Egypt for Zionist activity.",
+        ),
+        (
+            "Nahum Effendi, Chief Rabbi of Egypt, born in Turkey.",
+            "Nahum Effendi, chief Rabi of [inserted: all] Egypt, born in Turkey.",
+        ),
+        (
+            'England. Up with Egypt. Evacuation, Evacuation."',
+            'England. Up with Egypt. Evacuation, Evacuation".',
+        ),
+    )
+    egypt_note = _dispute(
+        DisputeCategory.CANCELLATION_OR_INSERTION,
+        "Egypt",
+        "",
+        dispute_id="dsp-egypt",
+    )
+    egypt_disputes = [egypt_note]
+    egypt_alignments = []
+    for index, (left, right) in enumerate(egypt_lines):
+        egypt_disputes.append(
+            _dispute(
+                DisputeCategory.WORDING,
+                left,
+                right,
+                dispute_id=f"dsp-egypt-line-{index}",
+            )
+        )
+        egypt_alignments.append(
+            _alignment(left, right, alignment_id=f"aln-egypt-{index}", sequence=index)
+        )
+    egypt_text = _render(
+        _output(_page(egypt_lines[0][0])),
+        _output(_page(egypt_lines[0][1]), "grok"),
+        _comparison(
+            _output(_page(egypt_lines[0][0])),
+            _output(_page(egypt_lines[0][1]), "grok"),
+            egypt_disputes,
+            egypt_alignments,
+        ),
+        [],
+    )
+    assert egypt_text.count("[Egypt / ∅]") == 0
+    for left, right in egypt_lines:
+        if left == right:
+            assert egypt_text.count(left) == 1
+        else:
+            assert f"[{left} / {right}]" in egypt_text
 
 
 def test_reading_order_shows_each_diplomatic_text_once() -> None:
