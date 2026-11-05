@@ -249,8 +249,8 @@ def test_unselected_disputes_stay_unresolved_and_report_lists_the_selection(
     text = paths["proposed_transcription.txt"].read_text(encoding="utf-8")
     assert "Alpha one" in text and "Bravo two" in text
     # Unselected spans keep both readings; no winner is fabricated.
-    assert "[Charlie three / Charly three]" in text
-    assert "[Echo five / Echo fyve]" in text
+    assert "[Charlie / Charly] three" in text
+    assert "Echo [five / fyve]" in text
     report = json.loads(paths["review_report.json"].read_text(encoding="utf-8"))
     assert [item["dispute_id"] for item in report["decisions"]] == chosen
     assert report["quality"] == "UNRESOLVED_CONTENT"

@@ -698,9 +698,10 @@ def test_several_disputes_on_one_span_are_not_duplicated() -> None:
     grok = _output(_page(right), "grok")
     comparison = _comparison(gpt, grok, [wording, name], [alignment])
     text = _render(gpt, grok, comparison, [])
-    assert text.count(f"[{left} / {right}]") == 1
-    assert text.count(left) == 1
-    assert text.count(right) == 1
+    assert text == "@@ page_001\n[Alpha / Alfa] one\n"
+    assert text.count("Alpha") == 1
+    assert text.count("Alfa") == 1
+    assert text.count("one") == 1
     shared = "youth and the middle"
     cancellation = _dispute(
         DisputeCategory.CANCELLATION_OR_INSERTION,
@@ -755,7 +756,11 @@ def test_fragment_decision_keeps_both_line_readings() -> None:
     )
     decision = _supported(fragment, "CANDIDATE_X", "school")
     text = _render(gpt, grok, comparison, [decision])
-    assert text == f"@@ page_001\n[{left} / {right}]\n"
+    assert text == (
+        "@@ page_001\n"
+        "Egyptian Hymn were played by the philharmonic of the Alexandria Jewish "
+        "[school. / School ~]\n"
+    )
     assert "[school / ∅]" not in text
     assert decision.selected_reading == "school"
 
@@ -785,7 +790,11 @@ def test_third_reading_replaces_only_a_full_line() -> None:
         _comparison(gpt, grok, [fragment], [_alignment(left, right)]),
         [fragment_decision],
     )
-    assert fragment_text == f"@@ page_001\n[{left} / {right}]\n"
+    assert fragment_text == (
+        "@@ page_001\n"
+        "Egyptian Hymn were played by the philharmonic of the Alexandria Jewish "
+        "[school. / School ~]\n"
+    )
     assert "schoolhouse" not in fragment_text
 
     whole = _dispute(DisputeCategory.WORDING, left, right, dispute_id="dsp-school-line")
@@ -889,8 +898,14 @@ def test_one_sided_notes_already_in_the_line_are_not_repeated() -> None:
         ),
         [],
     )
-    assert footnote_text == f"@@ page_001\n[{footnote_left} / {footnote_right}]\n"
-    assert footnote_text.count(footnote_left) == 1
+    assert footnote_text == (
+        "@@ page_001\n"
+        "1) For more information see [next-year / Bat-Yeor] "
+        '"Egyptian [Jews" / Jews)] (hebrew)\n'
+    )
+    assert footnote_text.count("next-year") == 1
+    assert footnote_text.count("Bat-Yeor") == 1
+    assert footnote_text.count(footnote_left) == 0
     assert "[∅]" not in footnote_text
 
     wars_left = (
@@ -921,7 +936,11 @@ def test_one_sided_notes_already_in_the_line_are_not_repeated() -> None:
         ),
         [],
     )
-    assert wars_text == f"@@ page_001\n[{wars_left} / {wars_right}]\n"
+    assert wars_text == (
+        "@@ page_001\n"
+        "Important events took place in the [Synagogues. / (synagogues).] "
+        "Enlisting of soldiers in the two world wars\n"
+    )
     assert "[in the two world wars / ∅]" not in wars_text
 
     egypt_lines = (
@@ -970,11 +989,12 @@ def test_one_sided_notes_already_in_the_line_are_not_repeated() -> None:
         [],
     )
     assert egypt_text.count("[Egypt / ∅]") == 0
-    for left, right in egypt_lines:
-        if left == right:
-            assert egypt_text.count(left) == 1
-        else:
-            assert f"[{left} / {right}]" in egypt_text
+    assert egypt_text.count(egypt_lines[0][0]) == 1
+    assert f"[{egypt_lines[1][0]} / {egypt_lines[1][1]}]" in egypt_text
+    assert (
+        'England. Up with Egypt. Evacuation, [Evacuation." / Evacuation".]'
+        in egypt_text
+    )
 
 
 def test_reading_order_shows_each_diplomatic_text_once() -> None:
@@ -1160,3 +1180,163 @@ def test_render_does_not_mutate_sources_evidence_or_decisions(tmp_path: Path) ->
     assert comparison.page_originals[0].gpt_diplomatic_transcription == "Alpha, "
     archive = tmp_path / "production"
     assert not archive.exists()
+
+
+# --- minimized alternatives and synthetic unreadable markers ------------------
+
+
+def _full_line(left: str, right: str) -> str:
+    return f"[{left} / {right}]"
+
+
+def test_document_104_lines_share_unchanged_words_once() -> None:
+    assert (
+        format_unresolved_alternatives(
+            "and cannot accept presents.",
+            "and canot accept presents.",
+        )
+        == "and [cannot / canot] accept presents."
+    )
+    assert (
+        format_unresolved_alternatives(
+            "on the 14th of May 1948, because of Zionist activities.",
+            "on the 17th of may 1948, because of Zionist activities.",
+        )
+        == "on the [14th / 17th] of [May / may] 1948, because of Zionist activities."
+    )
+    propaganda_left = (
+        "3- german propaganda and its influence on the palace, the Army, "
+        "and the government"
+    )
+    propaganda_right = (
+        "3- german propaganda, and its influence on the public, the Army, "
+        "and the goverment"
+    )
+    assert format_unresolved_alternatives(propaganda_left, propaganda_right) == (
+        "3- german [propaganda / propaganda,] and its influence on the "
+        "[palace, / public,] the Army, and the [government / goverment]"
+    )
+    assert format_unresolved_alternatives(
+        "and  cannot accept", "and  canot accept"
+    ) == ("and  [cannot / canot] accept")
+    shown = format_unresolved_alternatives(
+        "and cannot accept presents.",
+        "and canot accept presents.",
+    )
+    assert "cannot" in shown and "canot" in shown
+    assert shown != "and cannot accept presents."
+    assert shown != "and canot accept presents."
+
+
+def test_repeated_annotation_stays_outside_the_alternative() -> None:
+    left = "pray [inserted: at the synagogue] for the victory"
+    right = "pray [inserted: at the synagogue] for the Victory"
+    assert format_unresolved_alternatives(left, right) == (
+        "pray [inserted: at the synagogue] for the [victory / Victory]"
+    )
+
+
+def test_word_insertion_and_deletion_keep_both_sides() -> None:
+    assert (
+        format_unresolved_alternatives(
+            "the youth and the poor",
+            "the youth extra and the poor",
+        )
+        == "the youth[∅ /  extra] and the poor"
+    )
+    assert (
+        format_unresolved_alternatives("foo X bar baz", "foo bar baz Y")
+        == "foo[ X / ∅] bar baz[∅ /  Y]"
+    )
+
+
+def test_diplomatic_annotations_are_not_split() -> None:
+    cancelled = (
+        "movement. He was supported by the youth [cancelled: and] the "
+        "middle-class, and the poor."
+    )
+    deleted = (
+        "movement. He was supported by the youth [deleted: and], the "
+        "middle class, and the poors"
+    )
+    assert format_unresolved_alternatives(cancelled, deleted) == _full_line(
+        cancelled, deleted
+    )
+    assert "[middle-class, / middle class,]" not in format_unresolved_alternatives(
+        cancelled, deleted
+    )
+    nested_left = "easy nationalisation for [inserted: Palestine] Jews."
+    nested_right = "easy naturalisation for [inserted: [unclear: a fortune?]] Jews."
+    nested = format_unresolved_alternatives(nested_left, nested_right)
+    assert nested == _full_line(nested_left, nested_right)
+    assert "a fortune? / Palestine" not in nested
+    unclear_left = "On World War II, nightly bombing occured in Alexandria."
+    unclear_right = "On World War II [unclear: nightly] bombing occured in Alexandria."
+    unclear = format_unresolved_alternatives(unclear_left, unclear_right)
+    assert unclear == _full_line(unclear_left, unclear_right)
+    assert "[nightly / unclear:" not in unclear
+    illegible_left = "the late Elie Cohen from [illegible]"
+    illegible_right = "the late Eli Cohen from [unclear: Damascus?]"
+    illegible = format_unresolved_alternatives(illegible_left, illegible_right)
+    assert illegible == _full_line(illegible_left, illegible_right)
+    assert "[[illegible] /" not in illegible
+
+
+def test_unsafe_alignment_keeps_the_full_line() -> None:
+    assert format_unresolved_alternatives("see a / b now", "see c now") == _full_line(
+        "see a / b now", "see c now"
+    )
+    assert format_unresolved_alternatives("alpha beta", "beta alpha") == _full_line(
+        "alpha beta", "beta alpha"
+    )
+    assert format_unresolved_alternatives("[deleted: foo", "bar") == _full_line(
+        "[deleted: foo", "bar"
+    )
+
+
+def test_unresolved_text_flag_does_not_invent_an_unreadable_marker() -> None:
+    gpt = _output(_page("shared line", unresolved=True))
+    grok = _output(_page("shared line", unresolved=True), "grok")
+    comparison = _comparison(
+        gpt,
+        grok,
+        [],
+        [_alignment("shared line", "shared line")],
+        unresolved_pages=["page_001"],
+    )
+    text = _render(gpt, grok, comparison, [])
+    assert text == "@@ page_001\nshared line\n"
+    assert "[unreadable]" not in text
+    assert _quality(gpt, grok, comparison, []) == "UNRESOLVED_CONTENT"
+    single = render_transcription(
+        page_ids=["page_001"],
+        gpt=gpt,
+        grok=None,
+        comparison=None,
+        decisions=[],
+    )
+    assert single == "@@ page_001\nshared line\n"
+    assert "[unreadable]" not in single
+
+
+def test_provider_unreadable_marker_stays_in_the_diplomatic_text() -> None:
+    body = "faint ink\n[unreadable]"
+    gpt = _output(_page(body, unresolved=True))
+    grok = _output(_page(body, unresolved=True), "grok")
+    text = _render(
+        gpt,
+        grok,
+        _comparison(gpt, grok, [], [_alignment(body, body)]),
+        [],
+    )
+    assert text == f"@@ page_001\n{body}\n"
+    assert text.count("[unreadable]") == 1
+    kept = "line with [unreadable] in the margin"
+    other = "line with [unreadable] in the note"
+    assert (
+        format_unresolved_alternatives(kept, other)
+        == "line with [unreadable] in the [margin / note]"
+    )
+    differing = format_unresolved_alternatives("faint [unreadable]", "faint ink")
+    assert differing == _full_line("faint [unreadable]", "faint ink")
+    assert "[[unreadable] /" not in differing

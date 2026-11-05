@@ -10,8 +10,17 @@ back into readings.
 
 Conventions, applied only while rendering a new proposal:
 
-- Two nonempty single-line readings: ``[reading A / reading B]``.
-  Side A is the GPT reading and side B the Grok reading.
+- A single-line disagreement keeps text that is the same on both sides
+  once, and wraps only the spans that differ: ``and [cannot / canot]
+  accept presents.`` Side A is the GPT reading and side B the Grok reading.
+  Nothing in that view selects a winner.
+- Shared tokens are whitespace runs and other runs that do not split a
+  diplomatic annotation. ``[deleted: ...]``, ``[cancelled: ...]``,
+  ``[inserted: ...]``, and ``[unclear: ...]`` stay whole, including a
+  nested annotation inside them.
+- The minimized view is refused when it would nest brackets, put ``/``
+  inside an alternative, split an annotation, or show the same words once
+  after they moved. The line then stays ``[reading A / reading B]``.
 - A missing side (the empty string) is the display token ``∅``:
   ``[reading / ∅]`` or ``[∅ / reading]``. ``∅`` is not an archival character.
 - A reading that contains a line break uses one labeled block. Line breaks
@@ -31,6 +40,7 @@ Conventions, applied only while rendering a new proposal:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from difflib import SequenceMatcher
 
 from transcription_review_agent.review.models import (
     ChallengeClosureRecord,
@@ -46,6 +56,8 @@ from transcription_review_agent.review.spans import note_words_in, words
 MISSING_SIDE = "∅"
 ILLEGIBLE_DISPLAY = "[illegible]"
 _ILLEGIBLE_MARKERS = frozenset({"illegible", "[illegible]"})
+_ANNOTATION_MARKERS = ("[deleted:", "[cancelled:", "[inserted:", "[unclear:")
+_UNSAFE_ALTERNATIVE_CHARS = frozenset("[]/")
 
 
 def format_unresolved_alternatives(
@@ -66,7 +78,10 @@ def format_unresolved_alternatives(
     right_view = _display_side(right, right_illegible)
     if "\n" in left or "\n" in right:
         return f"[A:\n{left_view}\n/\nB:\n{right_view}]"
-    return f"[{left_view} / {right_view}]"
+    minimized = _minimize_line_alternatives(left_view, right_view)
+    if minimized is None:
+        return f"[{left_view} / {right_view}]"
+    return minimized
 
 
 def explicit_illegible_side(
@@ -260,6 +275,156 @@ def _display_side(text: str, illegible: bool) -> str:
     if text == "":
         return MISSING_SIDE
     return text
+
+
+def _minimize_line_alternatives(left: str, right: str) -> str | None:
+    """Shared tokens once, or ``None`` when the full-line form is safer.
+
+    ``None`` keeps the caller on ``[left / right]``. A minimized string
+    still contains both readings and does not prefer either one.
+    """
+
+    if left == right or "\n" in left or "\n" in right:
+        return None
+    left_tokens = _tokenize_line(left)
+    right_tokens = _tokenize_line(right)
+    if left_tokens is None or right_tokens is None:
+        return None
+    spans = _changed_spans(left_tokens, right_tokens)
+    if not any(kind == "equal" for kind, _, _ in spans):
+        return None
+    if not any(kind == "change" for kind, _, _ in spans):
+        return None
+    if _change_is_a_move(spans):
+        return None
+    parts: list[str] = []
+    rebuilt_left: list[str] = []
+    rebuilt_right: list[str] = []
+    for kind, left_hunk, right_hunk in spans:
+        if kind == "equal":
+            parts.append(left_hunk)
+            rebuilt_left.append(left_hunk)
+            rebuilt_right.append(left_hunk)
+            continue
+        if _alternative_hunk_unsafe(left_hunk, right_hunk):
+            return None
+        parts.append(
+            f"[{_display_side(left_hunk, False)} / {_display_side(right_hunk, False)}]"
+        )
+        rebuilt_left.append(left_hunk)
+        rebuilt_right.append(right_hunk)
+    if "".join(rebuilt_left) != left or "".join(rebuilt_right) != right:
+        return None
+    return "".join(parts)
+
+
+def _tokenize_line(text: str) -> list[str] | None:
+    """Whitespace runs, annotation atoms, and the remaining exact runs.
+
+    ``None`` means an annotation marker was opened and never closed.
+    """
+
+    tokens: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if _starts_annotation(text, index):
+            end = _annotation_end(text, index)
+            if end is None:
+                return None
+            tokens.append(text[index:end])
+            index = end
+            continue
+        if text[index].isspace():
+            next_index = index + 1
+            while next_index < length and text[next_index].isspace():
+                next_index += 1
+            tokens.append(text[index:next_index])
+            index = next_index
+            continue
+        next_index = index + 1
+        while next_index < length and not text[next_index].isspace():
+            if _starts_annotation(text, next_index):
+                break
+            next_index += 1
+        tokens.append(text[index:next_index])
+        index = next_index
+    return tokens
+
+
+def _starts_annotation(text: str, index: int) -> bool:
+    return any(text.startswith(marker, index) for marker in _ANNOTATION_MARKERS)
+
+
+def _annotation_end(text: str, start: int) -> int | None:
+    """Index after a balanced annotation, or ``None`` when it does not close."""
+
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "[":
+            depth += 1
+        elif text[index] == "]":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _changed_spans(
+    left_tokens: list[str], right_tokens: list[str]
+) -> list[tuple[str, str, str]]:
+    """Equal runs and contiguous changes. A change stores both exact hunks."""
+
+    matcher = SequenceMatcher(None, left_tokens, right_tokens, autojunk=False)
+    spans: list[tuple[str, str, str]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            spans.append(("equal", "".join(left_tokens[i1:i2]), ""))
+            continue
+        left_hunk = "".join(left_tokens[i1:i2])
+        right_hunk = "".join(right_tokens[j1:j2])
+        if spans and spans[-1][0] == "change":
+            _, previous_left, previous_right = spans[-1]
+            spans[-1] = (
+                "change",
+                previous_left + left_hunk,
+                previous_right + right_hunk,
+            )
+        else:
+            spans.append(("change", left_hunk, right_hunk))
+    return spans
+
+
+def _alternative_hunk_unsafe(left: str, right: str) -> bool:
+    """Brackets or a slash inside a span would make ``[A / B]`` ambiguous."""
+
+    return any(char in _UNSAFE_ALTERNATIVE_CHARS for char in left + right)
+
+
+def _change_is_a_move(spans: Sequence[tuple[str, str, str]]) -> bool:
+    """An insertion and a deletion of the same words is not a local edit.
+
+    Showing the shared word once would hide that the providers ordered it
+    differently. The full line stays visible instead.
+    """
+
+    inserted = [
+        right
+        for kind, left, right in spans
+        if kind == "change" and left == "" and right != ""
+    ]
+    deleted = [
+        left
+        for kind, left, right in spans
+        if kind == "change" and right == "" and left != ""
+    ]
+    if not inserted or not deleted:
+        return False
+    if set(words(" ".join(inserted))) & set(words(" ".join(deleted))):
+        return True
+    inserted_text = "".join(inserted).strip()
+    deleted_text = "".join(deleted).strip()
+    return inserted_text != "" and inserted_text == deleted_text
 
 
 def _unresolved_span(

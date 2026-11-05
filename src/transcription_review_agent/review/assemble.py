@@ -211,8 +211,6 @@ def _single_page(page: PageTranscription) -> str:
     body = page.diplomatic_transcription
     if not page.coverage.coverage_complete:
         body = "[coverage-incomplete]\n" + body
-    if page.coverage.unresolved_text_present and "[unreadable]" not in body:
-        body += "\n[unreadable]"
     return body
 
 
@@ -269,12 +267,11 @@ def _pair_page(
                 ),
             )
         )
-    body = "\n".join(part for part in parts if part != "")
-    if (
-        left.coverage.unresolved_text_present or right.coverage.unresolved_text_present
-    ) and "[unreadable]" not in body:
-        body += "\n[unreadable]"
-    return body
+    # unresolved_text_present means a reading is still uncertain. Comparison
+    # and quality already record that. It is not an unreadable region, so
+    # the proposal does not add [unreadable]. A marker written in the
+    # diplomatic text stays in that text.
+    return "\n".join(part for part in parts if part != "")
 
 
 def _reading_order_selected(
