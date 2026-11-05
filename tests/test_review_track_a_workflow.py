@@ -402,7 +402,7 @@ def test_zero_round_completion_uses_current_fixture_ids_and_keeps_alternatives(
         )
         in text
     )
-    assert "dated 13 March 1812." in text
+    assert "dated [12 / 13] March 1812." in text
     resumed = _replay(controller)
     assert resumed.status(BATCH_ID, DOCUMENT_ID).finalized is True
     assert _document(resumed).challenge_closure.mode == "NO_CHALLENGE_REQUESTED"
@@ -588,7 +588,7 @@ def test_provider_failure_closes_the_selection_without_a_winner(tmp_path: Path) 
     assert closure[_one(comparison, "WORDING").dispute_id] == "NOT_SELECTED"
     assert format_unresolved_alternatives(date.gpt_text, date.grok_text) in text
     assert format_unresolved_alternatives(name.gpt_text, name.grok_text) in text
-    assert date.grok_text in text
+    assert "[12 / 13]" in text
     resumed = _replay(controller)
     assert _document(resumed).challenge_closure.mode == "PROVIDER_TERMINAL_FAILURE"
     assert _document(resumed).reconciled_decisions == []
@@ -718,7 +718,8 @@ def test_shared_group_members_stay_independent_across_later_rounds(
     assert report["challenge_closure"]["max_challenge_rounds"] == 2
     # The two supported members chose different sides of one span, so neither
     # side is dropped. The later round's own span is the exact supported side.
-    assert first.gpt_text in text and first.grok_text in text
+    assert format_unresolved_alternatives(first.gpt_text, first.grok_text) in text
+    assert "[Alpha / Alfa] one" in text
     assert second.gpt_text in text
     assert second.grok_text not in text
     assert format_unresolved_alternatives(third.gpt_text, third.grok_text) in text

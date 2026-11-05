@@ -151,10 +151,10 @@ def test_intentional_zero_round_completion_keeps_every_alternative(
     assert report["challenge_closure"]["reason"] == REASON
     assert report["production_writeback"] is False
     assert "challenge_selections" not in report
-    assert "[Alpha one / Alfa one]" in text
-    assert "[Bravo two / Bravo twa]" in text
-    assert "[Charlie three / Charly three]" in text
-    assert "[Echo five / Echo fyve]" in text
+    assert "[Alpha / Alfa] one" in text
+    assert "Bravo [two / twa]" in text
+    assert "[Charlie / Charly] three" in text
+    assert "Echo [five / fyve]" in text
     assert controller.status(BATCH_ID, DOCUMENT_ID).finalized is True
     assert _events(controller, "challenge_closed")
     assert _events(controller, "review_finalized")
@@ -297,8 +297,8 @@ def test_partial_round_closure_completes_with_unselected_alternatives(
     }
     assert unresolved == {ids[2]: "NOT_SELECTED", ids[3]: "NOT_SELECTED"}
     assert "Alpha one" in text
-    assert "[Charlie three / Charly three]" in text
-    assert "[Echo five / Echo fyve]" in text
+    assert "[Charlie / Charly] three" in text
+    assert "Echo [five / fyve]" in text
     assert [item.dispute_id for item in document.reconciled_decisions] == chosen
     assert ids[2] not in {item.dispute_id for item in document.reconciled_decisions}
 
@@ -340,7 +340,7 @@ def test_terminal_quota_failure_closes_selected_items_unresolved(
     assert report["review_completion"] == "completed"
     assert report["quality"] == "UNRESOLVED_CONTENT"
     assert report["decisions"] == []
-    assert "[Alpha one / Alfa one]" in text
+    assert "[Alpha / Alfa] one" in text
     assert "winning" not in text.lower()
 
 
@@ -361,7 +361,7 @@ def test_invalid_output_is_a_confirmed_terminal_failure(tmp_path: Path) -> None:
     _close(controller, "PROVIDER_TERMINAL_FAILURE")
     paths = controller.finalize(BATCH_ID, DOCUMENT_ID)
     assert _report(paths)["decisions"] == []
-    assert "[Alpha one / Alfa one]" in paths["proposed_transcription.txt"].read_text(
+    assert "[Alpha / Alfa] one" in paths["proposed_transcription.txt"].read_text(
         encoding="utf-8"
     )
 
@@ -414,7 +414,7 @@ def test_later_round_accumulates_decisions_and_leaves_unselected_visible(
     }
     assert unresolved == {ids[2]: "NOT_SELECTED"}
     text = paths["proposed_transcription.txt"].read_text(encoding="utf-8")
-    assert "[Charlie three / Charly three]" in text
+    assert "[Charlie / Charly] three" in text
     assert "Echo fyve" in text or "Echo five" in text
 
 
