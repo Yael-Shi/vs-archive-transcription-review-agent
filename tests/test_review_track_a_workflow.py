@@ -387,10 +387,10 @@ def test_zero_round_completion_uses_current_fixture_ids_and_keeps_alternatives(
     assert format_unresolved_alternatives(name.gpt_text, name.grok_text) in text
     assert format_unresolved_alternatives(wording.gpt_text, wording.grok_text) in text
     assert format_unresolved_alternatives(missing.gpt_text, missing.grok_text) in text
+    assert "youth and the middle" in _page(text, cancelled.page_id)
     assert (
-        "youth and the middle\n"
-        + format_unresolved_alternatives(cancelled.gpt_text, cancelled.grok_text)
-        in text
+        format_unresolved_alternatives(cancelled.gpt_text, cancelled.grok_text)
+        not in text
     )
     gpt_order = next(
         page for page in comparison.page_originals if page.page_id == order.page_id
