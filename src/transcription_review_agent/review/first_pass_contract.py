@@ -200,6 +200,17 @@ def _lossless_renames(payload: dict[str, object]) -> list[str]:
     notes = [
         "Copy regions[].reading_order to regions[].order and omit reading_order when that integer is present.",
         "Leave page reading_order as it is.",
+        (
+            "Copy a region bbox_px [x0, y0, x1, y1] of half-open page pixels to "
+            "bbox {x: x0, y: y0, width: x1 - x0, height: y1 - y0} when every "
+            "value is an integer and the box lies inside the sealed page. "
+            "Do not clamp a box, and do not invent one. Omit bbox_px after the copy."
+        ),
+        (
+            "A line has no bbox field. When the region has no box and every one "
+            "of its lines has a valid bbox_px, set the region bbox to the union "
+            "of those line boxes. Otherwise leave the region bbox unset."
+        ),
     ]
     page = _first_page(payload)
     if "text_diplomatic" in page and "diplomatic_transcription" not in page:
@@ -213,7 +224,7 @@ def _lossless_renames(payload: dict[str, object]) -> list[str]:
         notes.append(
             "Move each existing line into the region that already cites its line_id. "
             "Copy text_diplomatic to text and keep line_id. "
-            "bbox_px and a line reading_order have no schema field."
+            "A line reading_order has no schema field."
         )
     coverage = payload.get("coverage_report")
     if isinstance(coverage, dict) and {
