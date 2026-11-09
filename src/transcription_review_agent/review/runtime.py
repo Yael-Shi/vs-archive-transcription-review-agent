@@ -709,6 +709,7 @@ def accumulate_decision(
                 "result_class": "UNRESOLVED",
                 "basis": "CONTRADICTORY_ROUND_EVIDENCE",
                 "selected_reading": None,
+                "partial_agreements": None,
                 "other_round_decisions": [*history, earlier_flat, later_flat],
             }
         )

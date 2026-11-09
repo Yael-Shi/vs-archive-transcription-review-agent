@@ -290,6 +290,66 @@ class EvidenceReference(BaseModel):
     page_id: str = Field(min_length=1)
 
 
+def _decision_reading(
+    label: ChallengeDecisionCode | None,
+    *,
+    candidate_x: str | None,
+    candidate_y: str | None,
+    third_reading: str | None,
+) -> str | None:
+    """The exact reading a challenge label selects, or ``None``."""
+
+    if label == "CANDIDATE_X":
+        return candidate_x
+    if label == "CANDIDATE_Y":
+        return candidate_y
+    if label == "THIRD_READING":
+        return third_reading
+    return None
+
+
+class PartialAgreementSpan(BaseModel):
+    """One exact slice of a dispute both providers supported, or still do not.
+
+    Offsets index the reading that provider's decision supports: candidate X,
+    candidate Y, or that provider's third reading. They are not offsets into
+    a normalized or combined string. An adopted span is the same text on both
+    sides. An unresolved span keeps both texts, including a genuine omission.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dispute_id: str = Field(min_length=1)
+    role: Literal["ADOPTED", "UNRESOLVED"]
+    gpt_start: int = Field(ge=0)
+    gpt_end: int = Field(ge=0)
+    grok_start: int = Field(ge=0)
+    grok_end: int = Field(ge=0)
+    gpt_text: str
+    grok_text: str
+    gpt_decision: ChallengeDecisionCode
+    grok_decision: ChallengeDecisionCode
+    gpt_evidence_ref: EvidenceReference
+    grok_evidence_ref: EvidenceReference
+    gpt_evidence_assessment: Literal["SUPPORTS_DECISION"]
+    grok_evidence_assessment: Literal["SUPPORTS_DECISION"]
+
+    @model_validator(mode="after")
+    def _text_matches_bounds(self) -> PartialAgreementSpan:
+        if self.gpt_end < self.gpt_start or self.grok_end < self.grok_start:
+            raise ValueError("partial agreement boundary is reversed")
+        if self.gpt_end - self.gpt_start != len(self.gpt_text):
+            raise ValueError("partial agreement boundary does not match the GPT text")
+        if self.grok_end - self.grok_start != len(self.grok_text):
+            raise ValueError("partial agreement boundary does not match the Grok text")
+        if self.role == "ADOPTED":
+            if self.gpt_text == "" or self.gpt_text != self.grok_text:
+                raise ValueError("an adopted span is the same non-empty text")
+        elif self.gpt_text == self.grok_text:
+            raise ValueError("an unresolved span must differ")
+        return self
+
+
 class ReconciledDecision(BaseModel):
     """Controller record of both decisions. Agreement is not verification.
 
@@ -297,6 +357,10 @@ class ReconciledDecision(BaseModel):
     marks a record that was reconciled before evidence binding existed. Such
     a record never counts as automatically supported, verified, or
     eligible for writer memory or publication.
+
+    ``partial_agreements`` is absent on legacy records and on disputes that
+    did not safely share a supported span. It never replaces the provider
+    readings stored beside it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -326,15 +390,75 @@ class ReconciledDecision(BaseModel):
     independently_verified: Literal[False] = False
     eligible_for_writer_memory: Literal[False] = False
     eligible_for_publication: Literal[False] = False
+    # Exact shared spans inside an otherwise unresolved dispute. ``None`` is
+    # omitted, so records from before partial agreement keep their bytes.
+    partial_agreements: list[PartialAgreementSpan] | None = None
     # A4. Decisions for this same dispute from other challenge rounds, in
     # round order. This record is the standing decision; these are the
     # earlier (or set-aside) ones, kept verbatim. ``None`` is omitted from the
     # JSON, so records without a second round keep their historical bytes.
     other_round_decisions: list[ReconciledDecision] | None = None
 
+    @model_validator(mode="after")
+    def _partial_agreements_partition_the_supported_readings(
+        self,
+    ) -> ReconciledDecision:
+        spans = self.partial_agreements
+        if not spans:
+            return self
+        if (
+            self.gpt_evidence_assessment != "SUPPORTS_DECISION"
+            or self.grok_evidence_assessment != "SUPPORTS_DECISION"
+        ):
+            raise ValueError(
+                "partial agreement requires both providers to support the decision"
+            )
+        if self.decision != "UNRESOLVED":
+            raise ValueError("partial agreement stays on an unresolved dispute")
+        gpt_reading = _decision_reading(
+            self.gpt_decision,
+            candidate_x=self.candidate_x_text,
+            candidate_y=self.candidate_y_text,
+            third_reading=self.gpt_third_reading,
+        )
+        grok_reading = _decision_reading(
+            self.grok_decision,
+            candidate_x=self.candidate_x_text,
+            candidate_y=self.candidate_y_text,
+            third_reading=self.grok_third_reading,
+        )
+        if gpt_reading is None or grok_reading is None:
+            raise ValueError("partial agreement has no supported reading")
+        gpt_at = 0
+        grok_at = 0
+        for span in spans:
+            if span.dispute_id != self.dispute_id:
+                raise ValueError("partial agreement is for a different dispute")
+            if (
+                span.gpt_decision != self.gpt_decision
+                or span.grok_decision != self.grok_decision
+                or span.gpt_evidence_ref != self.gpt_evidence_ref
+                or span.grok_evidence_ref != self.grok_evidence_ref
+            ):
+                raise ValueError("partial agreement does not match the decision")
+            if span.gpt_start != gpt_at or span.grok_start != grok_at:
+                raise ValueError("partial agreement boundaries are not contiguous")
+            if (
+                gpt_reading[span.gpt_start : span.gpt_end] != span.gpt_text
+                or grok_reading[span.grok_start : span.grok_end] != span.grok_text
+            ):
+                raise ValueError("partial agreement text is not the supported slice")
+            gpt_at = span.gpt_end
+            grok_at = span.grok_end
+        if gpt_at != len(gpt_reading) or grok_at != len(grok_reading):
+            raise ValueError("partial agreement does not cover the supported readings")
+        return self
+
     @model_serializer(mode="wrap")
     def _omit_absent_history(self, handler):  # type: ignore[no-untyped-def]
         data = handler(self)
+        if self.partial_agreements is None:
+            data.pop("partial_agreements", None)
         if self.other_round_decisions is None:
             data.pop("other_round_decisions", None)
         return data
