@@ -193,6 +193,23 @@ review-next accept \
 
 Accept only when validate reports `output_valid` true and `eligible_for_acceptance` true. Grok's attempt is a separate dispatch and is not changed by GPT's recovery.
 
+## Challenge budgets and stop policy
+
+Budgets limit tasks, rounds, and selected disputes. They are not measurements of GPT Work or Grok account usage, and they do not count tokens.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TRANSCRIPTION_REVIEW_MAX_CHALLENGE_DISPUTES` | `15` (1–200) | Substantive disputes in one newly opened challenge round |
+| `TRANSCRIPTION_REVIEW_MAX_CHALLENGE_ROUNDS` | `1` (1–2) | Challenge rounds for one document. The default stays one |
+| `TRANSCRIPTION_REVIEW_MAX_DOCUMENT_CHALLENGE_DISPATCHES` | `2` | Authorized challenge provider tasks for one document |
+| `TRANSCRIPTION_REVIEW_MAX_BATCH_CHALLENGE_DISPATCHES` | `10` | Authorized challenge provider tasks in one batch |
+
+Opening a challenge round reserves both provider tasks at once, before either task file is written. The reservation is stored on that round and counted once. The second provider, a repeated prepare, a transient retry, and the one invalid-output recovery use the reservation and do not add another task. A provider failure does not release the reservation and does not close the round. The check re-reads the batch ledger under an exclusive lock, so interleaved preparation of two documents cannot reserve more tasks than the batch budget. A round written before reservations existed is still counted by the providers that were actually published. First-pass and research tasks are not challenge allocations. The defaults match one round and both providers: 2 tasks on a document, and 5 documents × 2 tasks in a batch. A document budget of 1 cannot open a round. Setting the round cap to 2 does not raise the task budgets. A second round needs the document budget raised to 4, and the batch budget raised when 10 tasks is not enough.
+
+Round 1 with no `--dispute-id` selects up to the dispute cap and records that list. Order is dispute category, then the comparison order. Both providers receive the same frozen list. An explicit list is used as given. A list longer than the cap is rejected whole and is not truncated. Round 2 requires at least one `--dispute-id` and a new evidence file of an existing evidence kind. There is no automatic round-2 selection. A dispute is not examined again with evidence whose digest is a sealed page already used for that dispute, or a previous round's evidence file.
+
+The budget is checked before a new task is written and before a new round is opened. One publish is one provider. If the budget cannot cover it, that publish writes nothing and does not open the round. The challenge stage stays open. The operator closes it with `close-challenge`. Crossing a limit does not finalize the review and does not choose a transcription. A historical ledger round that has no selection still means the full substantive set.
+
 ## Quality checks
 
 Install the development tools with the project:

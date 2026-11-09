@@ -87,7 +87,10 @@ def _controller(
     return ReviewController(
         batches_dir=batches,
         reviews_dir=tmp_path / "reviews",
-        config=ReviewConfig(max_challenge_rounds=rounds),
+        config=ReviewConfig(
+            max_challenge_rounds=rounds,
+            max_document_challenge_dispatches=2 * rounds,
+        ),
         clock=lambda: NOW,
     )
 

@@ -1249,7 +1249,7 @@ def test_full_set_round_without_selection_is_grouped_but_unchanged_in_meaning(
     controller, comparison, names = _setup(tmp_path)
     everything = [item.dispute_id for item in challengeable_disputes(comparison)]
     _publish(controller, "gpt")
-    assert _document(controller).challenge_rounds[0].selected_dispute_ids is None
+    assert _document(controller).challenge_rounds[0].selected_dispute_ids == everything
     published = _published(controller)
     assert [item.dispute_id for item in published.disputes] == everything
     assert set(published.required_decision_ids or []) == set(everything)

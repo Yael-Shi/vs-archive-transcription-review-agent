@@ -146,14 +146,21 @@ from transcription_review_agent.review.runtime import (
     ReviewProvisionalEntry,
     ReviewStore,
     WorkPublishedEntry,
+    batch_challenge_dispatches,
     challenge_closure_problem,
+    challenge_reservation_cost,
     challenge_round_failed,
     describe_unresolved,
+    document_challenge_dispatches,
+    disputes_reexamined_with_digest,
+    file_evidence_identity,
     find_document,
     normalize_challenge_selection,
     provider_runtime,
     resolved_dispute_ids,
     round_selection,
+    schedule_challenge_disputes,
+    source_evidence_identity,
 )
 
 Clock = Callable[[], datetime]
@@ -415,9 +422,22 @@ class ReviewController:
         ``selected_dispute_ids`` (challenge stage only) freezes an explicit
         subset of substantive disputes for the round at its first provider
         publication. Later publications of the same round reuse it; a different
-        subset is refused. Without it the round covers the full substantive set.
+        subset is refused. Omitting it on round 1 records an automatic
+        selection of at most the configured dispute cap, in category priority
+        and then comparison order. A later round has no automatic selection.
+        A list longer than the cap is refused whole.
+
+        Opening a challenge round reserves both provider tasks against the
+        document and batch budgets before either task file is written. The
+        second provider uses that reservation. A repeated prepare, a transient
+        retry, and an invalid-output recovery do not reserve again. A provider
+        failure leaves the reservation in place and does not close the stage.
+        If both tasks do not fit, the round is not opened.
+
         Every newly opened round is evidence-bound. Only a historical ledger
         round whose publication predates the contract keeps legacy behavior.
+        A historical round without a selection still covers the full
+        substantive set.
         """
 
         provider = _provider_name(provider)
@@ -483,9 +503,12 @@ class ReviewController:
                 existing_round,
                 selected_dispute_ids,
                 round_index=round_index,
+                dispute_limit=self.config.max_challenge_disputes,
             )
         evidence_sha256 = None
         evidence_relative = None
+        evidence_identity: str | None = None
+        pending_evidence: tuple[str, bytes] | None = None
         if (stage_name == "challenge" and existing_round is not None) or (
             stage_name == "research"
         ):
@@ -504,13 +527,16 @@ class ReviewController:
             }:
                 raise ReviewPolicyError("an open challenge round keeps its evidence")
             if existing_round is None and round_index > 1:
-                evidence_sha256, evidence_relative = _validated_evidence(
-                    document,
-                    doc_root,
-                    round_index,
-                    evidence,
-                    evidence_path,
+                evidence_sha256, evidence_relative, evidence_bytes = (
+                    _inspect_new_evidence(
+                        document,
+                        round_index,
+                        evidence,
+                        evidence_path,
+                        selected_ids=task_selection or [],
+                    )
                 )
+                pending_evidence = (evidence_relative, evidence_bytes)
             if existing_round is not None:
                 _published_challenge_scopes(
                     doc_root,
@@ -556,6 +582,41 @@ class ReviewController:
         if existing_round is not None:
             evidence_sha256 = existing_round.evidence_sha256
             evidence_relative = existing_round.evidence_relative_path
+            evidence_identity = existing_round.evidence_identity
+        elif stage_name != "challenge":
+            evidence_identity = None
+        elif round_index == 1:
+            evidence_identity = source_evidence_identity(document)
+        else:
+            assert evidence is not None and evidence_sha256 is not None
+            evidence_identity = file_evidence_identity(evidence, evidence_sha256)
+        store = self._store(batch_id)
+        if stage_name == "challenge":
+            with store.exclusive_ledger():
+                return self._publish_challenge_files(
+                    store,
+                    batch_id=batch_id,
+                    document_id=document_id,
+                    document=document,
+                    provider=provider,
+                    stage_name=stage_name,
+                    round_index=round_index,
+                    attempt=attempt,
+                    doc_root=doc_root,
+                    existing_round=existing_round,
+                    ledger_evidence=ledger_evidence,
+                    evidence_sha256=evidence_sha256,
+                    evidence_relative=evidence_relative,
+                    evidence_identity=evidence_identity,
+                    pending_evidence=pending_evidence,
+                    ledger_selection=ledger_selection,
+                    selection_hash=selection_hash,
+                    task_selection=task_selection,
+                    challenge_contract=challenge_contract,
+                    comparison=comparison,
+                    recover_invalid_output=recover_invalid_output,
+                    runtime=runtime,
+                )
         request = _work_request(
             batch_id,
             document,
@@ -625,6 +686,140 @@ class ReviewController:
                 evidence=ledger_evidence,
                 evidence_sha256=evidence_sha256,
                 evidence_relative_path=evidence_relative,
+                evidence_identity=evidence_identity,
+                selected_dispute_ids=ledger_selection,
+                selection_comparison_sha256=selection_hash,
+                challenge_contract=challenge_contract,
+            )
+        )
+        return _request_path(doc_root, stage_name, provider, round_index)
+
+    def _publish_challenge_files(
+        self,
+        store: ReviewStore,
+        *,
+        batch_id: str,
+        document_id: int,
+        document: DocumentReviewState,
+        provider: str,
+        stage_name: StageName,
+        round_index: int,
+        attempt: int,
+        doc_root: Path,
+        existing_round: ChallengeRoundState | None,
+        ledger_evidence: str | None,
+        evidence_sha256: str | None,
+        evidence_relative: str | None,
+        evidence_identity: str | None,
+        pending_evidence: tuple[str, bytes] | None,
+        ledger_selection: list[str] | None,
+        selection_hash: str | None,
+        task_selection: list[str] | None,
+        challenge_contract: ChallengeContract | None,
+        comparison: ComparisonFile | None,
+        recover_invalid_output: bool,
+        runtime: ProviderRuntime,
+    ) -> Path:
+        """Reserve both providers, then write one provider task.
+
+        The caller holds the ledger lock. The batch is read again here so an
+        interleaved document cannot reserve the same slots.
+        """
+
+        current = store.load()
+        assert current is not None
+        fresh = find_document(current, document_id)
+        cost = challenge_reservation_cost(fresh, provider, round_index)
+        if cost:
+            _require_challenge_dispatch_budget(
+                self.config, current, fresh, additional=cost
+            )
+        fresh_round = next(
+            (
+                item
+                for item in fresh.challenge_rounds
+                if item.round_index == round_index
+            ),
+            None,
+        )
+        if fresh_round is not None:
+            dispatch_reservation = fresh_round.dispatch_reservation
+            if existing_round is None and (
+                fresh_round.selected_dispute_ids != ledger_selection
+                or fresh_round.selection_comparison_sha256 != selection_hash
+                or fresh_round.evidence != ledger_evidence
+                or fresh_round.evidence_sha256 != evidence_sha256
+                or fresh_round.challenge_contract != challenge_contract
+            ):
+                raise ReviewPolicyError(
+                    "the challenge selection is frozen at the first provider publication"
+                )
+        else:
+            dispatch_reservation = 2
+        already_published = fresh_round is not None
+        if pending_evidence is not None:
+            relative, payload = pending_evidence
+            _write_if_same(doc_root / relative, payload)
+        request = _work_request(
+            batch_id,
+            document,
+            provider=provider,
+            stage=stage_name,
+            round_index=round_index,
+            attempt=attempt,
+            distinct_output_attempt=recover_invalid_output,
+        )
+        transcription = _archive_text(self.batches_dir, batch_id, document_id)
+        if already_published:
+            _published_challenge_scopes(
+                doc_root,
+                fresh,
+                round_index,
+                expected_contract=challenge_contract,
+            )
+        if recover_invalid_output:
+            _preserve_rejected_task(
+                doc_root / stage_dir_name(stage_name, round_index) / "tasks" / provider,
+                doc_root
+                / stage_dir_name(stage_name, round_index)
+                / "attempts"
+                / f"a{runtime.attempt:02d}"
+                / "task",
+                rejected_attempt=runtime.attempt,
+            )
+        _prepare_bundle(
+            doc_root,
+            fresh,
+            request,
+            transcription,
+            comparison=comparison,
+            gpt=_load_output(doc_root, fresh, "gpt"),
+            grok=_load_output(doc_root, fresh, "grok"),
+            challenge_selection=task_selection,
+            challenge_contract=challenge_contract,
+            challenge_already_published=already_published,
+            replace_task_contract=recover_invalid_output,
+        )
+        current = store.load()
+        assert current is not None
+        store.commit(
+            WorkPublishedEntry(
+                sequence=current.applied_ledger_sequence + 1,
+                occurred_at=self.clock(),
+                batch_id=batch_id,
+                document_id=document_id,
+                provider=provider,  # type: ignore[arg-type]
+                stage=stage_name,  # type: ignore[arg-type]
+                round_index=round_index,
+                attempt=attempt,
+                task_id=request.task_id,
+                job_id=request.job_id,
+                output_relative_path=request.output_relative_path,
+                evidence=ledger_evidence,
+                evidence_sha256=evidence_sha256,
+                evidence_relative_path=evidence_relative,
+                evidence_identity=evidence_identity,
+                dispatch_reservation=dispatch_reservation,
                 selected_dispute_ids=ledger_selection,
                 selection_comparison_sha256=selection_hash,
                 challenge_contract=challenge_contract,
@@ -1751,12 +1946,15 @@ def _resolve_selection(
     requested: Sequence[str] | None,
     *,
     round_index: int = 1,
+    dispute_limit: int,
 ) -> tuple[list[str] | None, str | None, list[str] | None]:
     """Decide the selection a challenge publication uses, before anything is written.
 
     Returns ``(ledger_selection, comparison_hash, task_selection)``. A ``None``
     ledger selection is a legacy full-set round; ``task_selection`` is ``None``
-    for it too, so the task covers every substantive dispute.
+    for it too, so the task covers every substantive dispute. A new round
+    always records an explicit list. Round 1 fills that list automatically
+    when the operator omits it. A later round does not.
     """
 
     if document.comparison_sha256 is None:
@@ -1782,19 +1980,20 @@ def _resolve_selection(
             None if frozen is None else list(frozen),
         )
     if requested is None:
-        if round_index == 1:
-            return None, None, None
-        # A later round targets only disputes that are still unresolved.
-        unresolved = [
-            item
-            for item in current_ids
-            if item not in set(resolved_dispute_ids(document))
-        ]
-        if not unresolved:
+        if round_index > 1:
             raise ReviewPolicyError(
-                "no unresolved dispute remains for another challenge round"
+                "a later challenge round requires an explicit dispute selection"
             )
-        return unresolved, document.comparison_sha256, unresolved
+        chosen = schedule_challenge_disputes(
+            comparison,
+            limit=dispute_limit,
+            resolved_ids=resolved_dispute_ids(document),
+        )
+        if not chosen:
+            raise ReviewPolicyError(
+                "no unresolved dispute remains for a challenge round"
+            )
+        return chosen, document.comparison_sha256, chosen
     try:
         chosen = normalize_challenge_selection(
             requested,
@@ -1803,7 +2002,44 @@ def _resolve_selection(
         )
     except ValueError as exc:
         raise ReviewPolicyError(str(exc)) from exc
+    if len(chosen) > dispute_limit:
+        raise ReviewPolicyError(
+            f"a challenge round selects at most {dispute_limit} substantive "
+            f"disputes; the selection has {len(chosen)}"
+        )
     return chosen, document.comparison_sha256, chosen
+
+
+def _require_challenge_dispatch_budget(
+    config: ReviewConfig,
+    state: ReviewBatchState,
+    document: DocumentReviewState,
+    *,
+    additional: int,
+) -> None:
+    """Refuse a reservation before any file for it is written.
+
+    ``additional`` is 2 when a round is opening and 1 when a legacy round
+    gains a provider that was not reserved. The count is tasks, not tokens.
+    """
+
+    pair = ""
+    if additional == 2:
+        pair = "; a new round reserves both providers"
+    document_count = document_challenge_dispatches(document) + additional
+    if document_count > config.max_document_challenge_dispatches:
+        raise ReviewLimitError(
+            "document challenge dispatch budget is exhausted "
+            f"({config.max_document_challenge_dispatches} authorized "
+            f"challenge dispatches{pair}). The challenge stage is not closed"
+        )
+    batch_count = batch_challenge_dispatches(state) + additional
+    if batch_count > config.max_batch_challenge_dispatches:
+        raise ReviewLimitError(
+            "batch challenge dispatch budget is exhausted "
+            f"({config.max_batch_challenge_dispatches} authorized "
+            f"challenge dispatches{pair}). The challenge stage is not closed"
+        )
 
 
 def _require_research_allowed(document: DocumentReviewState, doc_root: Path) -> None:
@@ -3501,13 +3737,21 @@ def _write_allowlisted(
         raise ReviewIntegrityError("task bundle contains a file outside the allowlist")
 
 
-def _validated_evidence(
+def _inspect_new_evidence(
     document: DocumentReviewState,
-    doc_root: Path,
     round_index: int,
     evidence: str | None,
     evidence_path: Path | None,
-) -> tuple[str, str]:
+    *,
+    selected_ids: Sequence[str],
+) -> tuple[str, str, bytes]:
+    """Read a later round's evidence file without writing it.
+
+    The caller writes the bytes only after the dispatch budget allows the
+    new round. A digest already used for one of ``selected_ids`` names those
+    disputes. Any other repeated digest is still refused.
+    """
+
     if evidence not in NEW_EVIDENCE_KINDS:
         raise ReviewPolicyError(
             "a second challenge round requires a concrete new evidence kind"
@@ -3535,6 +3779,12 @@ def _validated_evidence(
         if challenge.evidence_sha256 is not None:
             examined.add(challenge.evidence_sha256)
     if digest in examined:
+        repeated = disputes_reexamined_with_digest(document, selected_ids, digest)
+        if repeated:
+            raise ReviewPolicyError(
+                "these disputes were already examined with the same evidence: "
+                + ", ".join(repeated)
+            )
         raise ReviewPolicyError(
             "new challenge evidence is not different from evidence already examined"
         )
@@ -3543,9 +3793,11 @@ def _validated_evidence(
         if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
         else ".bin"
     )
-    relative = f"{stage_dir_name('challenge', round_index)}/evidence/evidence_{digest[:16]}{suffix}"
-    _write_if_same(doc_root / relative, data)
-    return digest, relative
+    relative = (
+        f"{stage_dir_name('challenge', round_index)}/evidence/"
+        f"evidence_{digest[:16]}{suffix}"
+    )
+    return digest, relative, data
 
 
 def _reject_transcription_leak(root: Path, transcription: str) -> None:
