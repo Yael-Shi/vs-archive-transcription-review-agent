@@ -171,6 +171,36 @@ def selected_span_text(
     return None
 
 
+def _partial_agreement_text(
+    decision: ReconciledDecision | None,
+    dispute: Dispute,
+    left: str,
+    right: str,
+) -> str | None:
+    """Render stored partial spans when this dispute is the whole line.
+
+    The spans are the supported readings, which may differ from the first-pass
+    pair. A dispute that covers only part of the line does not lend its spans
+    to the rest. A span that cannot be shown safely yields ``None``, and the
+    caller keeps both original sides.
+    """
+
+    if decision is None or not decision.partial_agreements:
+        return None
+    if dispute.gpt_text != left or dispute.grok_text != right:
+        return None
+    parts: list[str] = []
+    for span in decision.partial_agreements:
+        if span.role == "ADOPTED":
+            parts.append(span.gpt_text)
+            continue
+        alternative = _format_change(span.gpt_text, span.grok_text)
+        if alternative is None:
+            return None
+        parts.append(alternative)
+    return "".join(parts)
+
+
 def render_aligned_span(
     left: str,
     right: str,
@@ -185,6 +215,8 @@ def render_aligned_span(
     Several disputes on the same span contribute one view. Unresolved,
     unselected, failed, and conflicting decisions leave both source sides
     visible. Agreed selections collapse to the one exact selected span.
+    A stored partial agreement shows the shared supported text once and
+    keeps every remaining difference.
     """
 
     if not disputes:
@@ -196,11 +228,20 @@ def render_aligned_span(
             left_illegible=left_illegible,
             right_illegible=right_illegible,
         )
+    if left_illegible or right_illegible:
+        return _unresolved_span(
+            left,
+            right,
+            disputes,
+            left_illegible=left_illegible,
+            right_illegible=right_illegible,
+        )
     chosen: list[str] = []
     for dispute in disputes:
-        selected = selected_span_text(
-            decisions.get(dispute.dispute_id), dispute, left, right
-        )
+        decision = decisions.get(dispute.dispute_id)
+        selected = selected_span_text(decision, dispute, left, right)
+        if selected is None:
+            selected = _partial_agreement_text(decision, dispute, left, right)
         if selected is None:
             return _unresolved_span(
                 left,
@@ -277,12 +318,27 @@ def _display_side(text: str, illegible: bool) -> str:
     return text
 
 
-def _minimize_line_alternatives(left: str, right: str) -> str | None:
-    """Shared tokens once, or ``None`` when the full-line form is safer.
+def shared_supported_partitions(
+    left: str, right: str
+) -> list[tuple[str, str, str]] | None:
+    """Safely aligned slices of two supported readings, or ``None``.
 
-    ``None`` keeps the caller on ``[left / right]``. A minimized string
-    still contains both readings and does not prefer either one.
+    ``None`` means the readings are not a single-line partition with a real
+    shared word: a line break, a reordered word, an unclosed annotation, or
+    only punctuation in common. The caller then keeps the whole dispute
+    unresolved. An equal slice is the same text on both sides. A change
+    keeps both exact hunks. Nothing here prefers a reading or invents text.
     """
+
+    if "\n" in left or "\n" in right or left == "" or right == "":
+        return None
+    if left == right:
+        return [("equal", left, left)] if _has_word(left) else None
+    return _partition_line(left, right)
+
+
+def _partition_line(left: str, right: str) -> list[tuple[str, str, str]] | None:
+    """Equal and changed hunks that rebuild both strings, or ``None``."""
 
     if left == right or "\n" in left or "\n" in right:
         return None
@@ -300,23 +356,37 @@ def _minimize_line_alternatives(left: str, right: str) -> str | None:
     spans = _coalesce_unanchored(spans)
     if not any(kind == "equal" and _has_word(text) for kind, text, _ in spans):
         return None
-    parts: list[str] = []
     rebuilt_left: list[str] = []
     rebuilt_right: list[str] = []
     for kind, left_hunk, right_hunk in spans:
+        if kind == "change" and _format_change(left_hunk, right_hunk) is None:
+            return None
+        rebuilt_left.append(left_hunk)
+        rebuilt_right.append(left_hunk if kind == "equal" else right_hunk)
+    if "".join(rebuilt_left) != left or "".join(rebuilt_right) != right:
+        return None
+    return spans
+
+
+def _minimize_line_alternatives(left: str, right: str) -> str | None:
+    """Shared tokens once, or ``None`` when the full-line form is safer.
+
+    ``None`` keeps the caller on ``[left / right]``. A minimized string
+    still contains both readings and does not prefer either one.
+    """
+
+    spans = _partition_line(left, right)
+    if spans is None:
+        return None
+    parts: list[str] = []
+    for kind, left_hunk, right_hunk in spans:
         if kind == "equal":
             parts.append(left_hunk)
-            rebuilt_left.append(left_hunk)
-            rebuilt_right.append(left_hunk)
             continue
         alternative = _format_change(left_hunk, right_hunk)
         if alternative is None:
             return None
         parts.append(alternative)
-        rebuilt_left.append(left_hunk)
-        rebuilt_right.append(right_hunk)
-    if "".join(rebuilt_left) != left or "".join(rebuilt_right) != right:
-        return None
     return "".join(parts)
 
 
@@ -389,7 +459,8 @@ def _changed_spans(
     spans: list[tuple[str, str, str]] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
-            spans.append(("equal", "".join(left_tokens[i1:i2]), ""))
+            text = "".join(left_tokens[i1:i2])
+            spans.append(("equal", text, text))
             continue
         left_hunk = "".join(left_tokens[i1:i2])
         right_hunk = "".join(right_tokens[j1:j2])

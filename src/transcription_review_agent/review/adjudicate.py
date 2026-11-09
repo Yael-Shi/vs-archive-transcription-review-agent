@@ -14,7 +14,10 @@ The rule turns two provider decisions for one dispute into one
 ``UNRESOLVED``
     Anything else that is still well formed: different labels, a provider
     that is itself unresolved, ``INSUFFICIENT`` or ``UNREADABLE`` evidence, or
-    differing third readings.
+    differing third readings. When both providers nevertheless support a
+    reading and those readings share a safely aligned span, the record keeps
+    ``partial_agreements``. Shared text is adopted only there. The dispute
+    stays unresolved, and every differing span stays visible.
 
 Automatically supported is not independently verified. It means that two
 model outputs met a reproducible rule. It is never ground truth, never
@@ -35,11 +38,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from transcription_review_agent.review.formatting import shared_supported_partitions
 from transcription_review_agent.review.models import (
     ChallengeDecision,
     Dispute,
     EvidenceKind,
     EvidenceReference,
+    PartialAgreementSpan,
     ReconciledDecision,
     ReconciliationBasis,
 )
@@ -209,6 +214,7 @@ def reconcile_challenge(
             selected = dispute.grok_text
         else:
             selected = gpt.third_reading
+    partial = None if supported else _partial_agreements(dispute, gpt, grok)
 
     return ReconciledDecision(
         dispute_id=dispute.dispute_id,
@@ -234,4 +240,76 @@ def reconcile_challenge(
         grok_evidence_ref=grok_ref,
         gpt_evidence_assessment=gpt.evidence_assessment,
         grok_evidence_assessment=grok.evidence_assessment,
+        partial_agreements=partial,
     )
+
+
+def _supported_reading(decision: ChallengeDecision, dispute: Dispute) -> str | None:
+    """The reading this decision explicitly supports, or ``None``.
+
+    Support is the structured assessment plus a candidate or third reading.
+    The prose in ``visual_evidence`` is not consulted. An unresolved decision
+    supports nothing, even when its assessment says ``SUPPORTS_DECISION``.
+    """
+
+    if decision.evidence_assessment != "SUPPORTS_DECISION":
+        return None
+    if decision.decision == "CANDIDATE_X":
+        return dispute.gpt_text
+    if decision.decision == "CANDIDATE_Y":
+        return dispute.grok_text
+    if decision.decision == "THIRD_READING":
+        return decision.third_reading
+    return None
+
+
+def _partial_agreements(
+    dispute: Dispute,
+    gpt: ChallengeDecision,
+    grok: ChallengeDecision,
+) -> list[PartialAgreementSpan] | None:
+    """Adopt only the spans both supported readings share exactly.
+
+    The two readings stay in their own order. A move, a line break, or a
+    span that cannot be displayed without mixing the sides produces no
+    partial agreement at all.
+    """
+
+    gpt_reading = _supported_reading(gpt, dispute)
+    grok_reading = _supported_reading(grok, dispute)
+    if (
+        gpt_reading is None
+        or grok_reading is None
+        or gpt.evidence_ref is None
+        or grok.evidence_ref is None
+    ):
+        return None
+    partitions = shared_supported_partitions(gpt_reading, grok_reading)
+    if partitions is None:
+        return None
+    spans: list[PartialAgreementSpan] = []
+    gpt_at = 0
+    grok_at = 0
+    for kind, left_hunk, right_hunk in partitions:
+        grok_hunk = left_hunk if kind == "equal" else right_hunk
+        spans.append(
+            PartialAgreementSpan(
+                dispute_id=dispute.dispute_id,
+                role="ADOPTED" if kind == "equal" else "UNRESOLVED",
+                gpt_start=gpt_at,
+                gpt_end=gpt_at + len(left_hunk),
+                grok_start=grok_at,
+                grok_end=grok_at + len(grok_hunk),
+                gpt_text=left_hunk,
+                grok_text=grok_hunk,
+                gpt_decision=gpt.decision,
+                grok_decision=grok.decision,
+                gpt_evidence_ref=gpt.evidence_ref,
+                grok_evidence_ref=grok.evidence_ref,
+                gpt_evidence_assessment="SUPPORTS_DECISION",
+                grok_evidence_assessment="SUPPORTS_DECISION",
+            )
+        )
+        gpt_at += len(left_hunk)
+        grok_at += len(grok_hunk)
+    return spans
