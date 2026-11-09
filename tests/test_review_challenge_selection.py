@@ -284,18 +284,22 @@ def test_explicit_full_set_selection_is_valid(tmp_path: Path) -> None:
     ] == ids
 
 
-def test_no_selection_keeps_the_historical_full_set_round(tmp_path: Path) -> None:
+def test_omitted_round_one_selection_is_recorded_for_both_providers(
+    tmp_path: Path,
+) -> None:
     controller, ids, _other = _setup(tmp_path)
     requests = {
         provider: _publish(controller, provider) for provider in ("gpt", "grok")
     }
-    round_state = _document(controller).challenge_rounds[0]
-    assert round_state.selected_dispute_ids is None
-    assert round_state.selection_comparison_sha256 is None
-    assert round_selection(_document(controller), 1) == ids
+    document = _document(controller)
+    round_state = document.challenge_rounds[0]
+    assert round_state.selected_dispute_ids == ids
+    assert round_state.selection_comparison_sha256 == document.comparison_sha256
+    assert round_state.evidence_identity == f"source:{document.source_bundle_sha256}"
+    assert round_selection(document, 1) == ids
     assert [item["selected_dispute_ids"] for item in _challenge_events(controller)] == [
-        None,
-        None,
+        ids,
+        ids,
     ]
     disputes = json.loads(
         (
@@ -308,7 +312,13 @@ def test_no_selection_keeps_the_historical_full_set_round(tmp_path: Path) -> Non
     _close_challenge(controller)
     paths = controller.finalize(BATCH_ID, DOCUMENT_ID)
     report = json.loads(paths["review_report.json"].read_text(encoding="utf-8"))
-    assert "challenge_selections" not in report
+    assert report["challenge_selections"] == [
+        {
+            "round_index": 1,
+            "selected_dispute_ids": ids,
+            "comparison_sha256": _document(controller).comparison_sha256,
+        }
+    ]
     assert [item["dispute_id"] for item in report["decisions"]] == ids
 
 
@@ -365,7 +375,10 @@ def test_selection_is_refused_outside_the_challenge_stage(tmp_path: Path) -> Non
 
 def test_resolved_id_cannot_be_selected_for_a_later_round(tmp_path: Path) -> None:
     controller, ids, _other = _setup(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     chosen = [ids[0], ids[1]]
     for provider in ("gpt", "grok"):
         request = _publish(controller, provider, selected_dispute_ids=chosen)
@@ -737,7 +750,10 @@ def test_second_round_keeps_earlier_decisions_and_selects_only_unresolved_ids(
     tmp_path: Path,
 ) -> None:
     controller, ids, _other = _setup(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     chosen = [ids[0], ids[1]]
     for provider in ("gpt", "grok"):
         request = _publish(controller, provider, selected_dispute_ids=chosen)

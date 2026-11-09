@@ -16,7 +16,7 @@ class ReviewPathError(ReviewError):
 
 
 class ReviewLimitError(ReviewError):
-    """A configured page, document, or challenge limit was exceeded."""
+    """A configured page, document, or challenge-dispatch limit was exceeded."""
 
 
 class ReviewIntegrityError(ReviewError):

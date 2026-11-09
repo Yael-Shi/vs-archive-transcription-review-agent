@@ -202,7 +202,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dispute-id",
         action="append",
-        help="challenge stage only: select this substantive dispute ID (repeatable)",
+        help=(
+            "challenge stage only: select this substantive dispute ID "
+            "(repeatable). Round 1 with none records an automatic selection "
+            "of at most the dispute cap. A later round requires at least one"
+        ),
     )
     parser.add_argument(
         "--closure-mode",

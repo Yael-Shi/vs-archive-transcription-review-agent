@@ -373,7 +373,10 @@ def test_later_round_accumulates_decisions_and_leaves_unselected_visible(
     tmp_path: Path,
 ) -> None:
     controller, ids, _other = _setup(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     first = [ids[0], ids[1]]
     for provider in ("gpt", "grok"):
         _answer_and_accept(
@@ -418,11 +421,12 @@ def test_later_round_accumulates_decisions_and_leaves_unselected_visible(
     assert "Echo fyve" in text or "Echo five" in text
 
 
-def test_later_round_rejects_resolved_ids_and_omitted_selection_targets_unresolved(
-    tmp_path: Path,
-) -> None:
+def test_later_round_requires_an_explicit_selection(tmp_path: Path) -> None:
     controller, ids, _other = _setup(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     first = [ids[0], ids[1]]
     for provider in ("gpt", "grok"):
         _answer_and_accept(
@@ -441,7 +445,16 @@ def test_later_round_rejects_resolved_ids_and_omitted_selection_targets_unresolv
             evidence_path=evidence,
             selected_dispute_ids=[ids[0], ids[2]],
         )
-    request = _publish(controller, "gpt", evidence="new_crop", evidence_path=evidence)
+    with pytest.raises(ReviewPolicyError, match="explicit dispute selection"):
+        _publish(controller, "gpt", evidence="new_crop", evidence_path=evidence)
+    assert len(_document(controller).challenge_rounds) == 1
+    request = _publish(
+        controller,
+        "gpt",
+        evidence="new_crop",
+        evidence_path=evidence,
+        selected_dispute_ids=[ids[1], ids[2], ids[3]],
+    )
     selected = _document(controller).challenge_rounds[1].selected_dispute_ids
     assert ids[0] not in selected
     assert ids[1] in selected
@@ -606,6 +619,7 @@ def test_no_new_information_is_recorded_instead_of_launching_another_round(
             "gpt",
             evidence="different_source_scan",
             evidence_path=page_png,
+            selected_dispute_ids=[ids[1]],
         )
     _close(controller, "NO_NEW_INFORMATION", reason="No new scan is available.")
     assert _document(controller).challenge_closure.mode == "NO_NEW_INFORMATION"
@@ -625,7 +639,10 @@ def test_no_new_information_is_recorded_instead_of_launching_another_round(
 
 def test_two_configured_rounds_then_the_cap(tmp_path: Path) -> None:
     controller, ids, _other = _setup(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     for provider in ("gpt", "grok"):
         _answer_and_accept(
             controller,
@@ -671,7 +688,10 @@ def test_replay_restores_closure_accumulated_decisions_and_completion(
     tmp_path: Path,
 ) -> None:
     controller, ids, _other = _setup(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     first = [ids[0], ids[1]]
     for provider in ("gpt", "grok"):
         _answer_and_accept(

@@ -6,8 +6,10 @@ discovery ledger in ``state/``.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Final, Literal, Sequence, Union
@@ -17,9 +19,12 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 from transcription_review_agent.bundling.layout import assert_safe_relative_path
 from transcription_review_agent.constants import BATCH_ID_PATTERN, SHA256_PATTERN
 from transcription_review_agent.review.errors import ReviewIntegrityError
+from transcription_review_agent.review.compare import challengeable_disputes
 from transcription_review_agent.review.models import (
+    DISPUTE_PRIORITY,
     ChallengeClosureRecord,
     ChallengeDecision,
+    ComparisonFile,
     ExecutionState,
     ProviderStatus,
     QualityLabel,
@@ -92,6 +97,14 @@ class ChallengeRoundState(BaseModel):
     evidence: str | None = None
     evidence_sha256: Sha256 | None = None
     evidence_relative_path: str | None = None
+    # Absent on a round published before dispatch budgets. A new round 1
+    # stores ``source:<bundle sha256>``. A later round stores
+    # ``<evidence kind>:<file sha256>``.
+    evidence_identity: str | None = None
+    # Absent on a round opened before both providers were reserved together.
+    # A new round stores 2: one task for GPT and one for Grok. Legacy rounds
+    # stay None and are counted by the providers that were actually published.
+    dispatch_reservation: int | None = Field(default=None, ge=2, le=2)
     providers: list[ProviderRuntime]
     reconciled: bool = False
     # A1. ``None`` is a legacy round (or one opened without an explicit
@@ -208,6 +221,10 @@ class WorkPublishedEntry(ReviewLedgerBase):
     evidence: str | None = None
     evidence_sha256: Sha256 | None = None
     evidence_relative_path: str | None = None
+    # Absent in legacy events. See ChallengeRoundState.evidence_identity.
+    evidence_identity: str | None = None
+    # Absent in legacy events. See ChallengeRoundState.dispatch_reservation.
+    dispatch_reservation: int | None = Field(default=None, ge=2, le=2)
     # A1. Absent in legacy events, which mean the historical full substantive set.
     selected_dispute_ids: list[str] | None = None
     selection_comparison_sha256: Sha256 | None = None
@@ -483,6 +500,141 @@ def normalize_challenge_selection(
     return [item for item in substantive_ids if item in chosen]
 
 
+def schedule_challenge_disputes(
+    comparison: ComparisonFile,
+    *,
+    limit: int,
+    resolved_ids: Sequence[str],
+) -> list[str]:
+    """Eligible substantive disputes, capped, in priority then comparison order.
+
+    Priority is the dispute category. The same category keeps the order of
+    ``comparison.disputes``. The result is never longer than ``limit``.
+    """
+
+    if limit < 1:
+        raise ValueError("challenge dispute limit must be at least 1")
+    resolved = set(resolved_ids)
+    position = {
+        item.dispute_id: index for index, item in enumerate(comparison.disputes)
+    }
+    eligible = [
+        item
+        for item in challengeable_disputes(comparison)
+        if item.dispute_id not in resolved
+    ]
+    eligible.sort(
+        key=lambda item: (DISPUTE_PRIORITY[item.category], position[item.dispute_id])
+    )
+    return [item.dispute_id for item in eligible[:limit]]
+
+
+def source_evidence_identity(document: DocumentReviewState) -> str:
+    """Evidence identity of a round that examines the sealed source bundle."""
+
+    return f"source:{document.source_bundle_sha256}"
+
+
+def file_evidence_identity(kind: str, digest: str) -> str:
+    """Evidence identity of a later round's new evidence file."""
+
+    return f"{kind}:{digest}"
+
+
+def provider_dispatch_authorized(
+    challenge: ChallengeRoundState | None, provider: str
+) -> bool:
+    """True when this provider already has a challenge task on this round.
+
+    A later attempt, including a transient retry or an invalid-output
+    recovery, is the same allocation.
+    """
+
+    if challenge is None:
+        return False
+    for item in challenge.providers:
+        if item.provider == provider:
+            return item.attempt >= 1
+    return False
+
+
+def round_challenge_dispatches(challenge: ChallengeRoundState) -> int:
+    """Tasks this round holds against the dispatch budgets.
+
+    A reserved round holds both provider tasks from the moment it opens.
+    A legacy round holds one task for each provider that was published.
+    Later attempts are not recounted.
+    """
+
+    if challenge.dispatch_reservation is not None:
+        return challenge.dispatch_reservation
+    return sum(1 for item in challenge.providers if item.attempt >= 1)
+
+
+def challenge_reservation_cost(
+    document: DocumentReviewState, provider: str, round_index: int
+) -> int:
+    """How many new task slots this publication needs.
+
+    Opening a round needs both providers. Joining a reserved round, retrying,
+    or recovering needs none. Joining a legacy round needs one slot for a
+    provider that has not been published.
+    """
+
+    challenge = next(
+        (item for item in document.challenge_rounds if item.round_index == round_index),
+        None,
+    )
+    if challenge is None:
+        return 2
+    if challenge.dispatch_reservation is not None:
+        return 0
+    if provider_dispatch_authorized(challenge, provider):
+        return 0
+    return 1
+
+
+def document_challenge_dispatches(document: DocumentReviewState) -> int:
+    """Challenge tasks reserved or published on this document."""
+
+    return sum(round_challenge_dispatches(item) for item in document.challenge_rounds)
+
+
+def batch_challenge_dispatches(state: ReviewBatchState) -> int:
+    """Authorized challenge tasks in the batch. Attempts are not recounted."""
+
+    return sum(document_challenge_dispatches(item) for item in state.documents)
+
+
+def disputes_reexamined_with_digest(
+    document: DocumentReviewState,
+    dispute_ids: Sequence[str],
+    digest: str,
+) -> list[str]:
+    """Selected disputes whose prior round already used this evidence digest.
+
+    A round with no extra file examined the sealed page images. A later file
+    whose digest is one of those pages is the same evidence for every dispute
+    that round selected.
+    """
+
+    page_hashes = {page.sha256 for page in document.pages}
+    found: list[str] = []
+    seen: set[str] = set()
+    for challenge in document.challenge_rounds:
+        used = challenge.evidence_sha256 == digest or (
+            challenge.evidence_sha256 is None and digest in page_hashes
+        )
+        if not used:
+            continue
+        prior = set(round_selection(document, challenge.round_index))
+        for dispute_id in dispute_ids:
+            if dispute_id in prior and dispute_id not in seen:
+                seen.add(dispute_id)
+                found.append(dispute_id)
+    return found
+
+
 OPEN_DISPATCH_STATUSES = frozenset(
     {
         ProviderStatus.AWAITING_MANUAL_DISPATCH,
@@ -752,6 +904,23 @@ class ReviewStore:
             self.write_checkpoint(replayed)
             return replayed
         return checkpoint
+
+    @contextmanager
+    def exclusive_ledger(self):
+        """Hold the ledger lock across a budget check and its commit.
+
+        The lock is per open file description, so two preparations in this
+        process or another cannot reserve the same batch slots.
+        """
+
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self.ledger_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     def commit(self, entry: ReviewLedgerEntry) -> ReviewBatchState:
         current = self.load()
@@ -1291,8 +1460,11 @@ def _ensure_challenge_round(
         if (
             entry.evidence != current.evidence
             or entry.evidence_sha256 != current.evidence_sha256
+            or entry.evidence_identity != current.evidence_identity
         ):
             raise ReviewIntegrityError("challenge evidence changed")
+        if entry.dispatch_reservation != current.dispatch_reservation:
+            raise ReviewIntegrityError("challenge dispatch reservation changed")
         if (
             entry.selected_dispute_ids != current.selected_dispute_ids
             or entry.selection_comparison_sha256 != current.selection_comparison_sha256
@@ -1318,6 +1490,8 @@ def _ensure_challenge_round(
         evidence=entry.evidence,
         evidence_sha256=entry.evidence_sha256,
         evidence_relative_path=entry.evidence_relative_path,
+        evidence_identity=entry.evidence_identity,
+        dispatch_reservation=entry.dispatch_reservation,
         providers=both_providers(),
         selected_dispute_ids=selection,
         selection_comparison_sha256=(

@@ -736,7 +736,10 @@ def test_crop_window_contains_the_target_and_adds_no_detail() -> None:
 
 def test_second_challenge_round_requires_new_evidence(tmp_path: Path) -> None:
     controller = _controller(tmp_path)
-    controller.config = ReviewConfig(max_challenge_rounds=2)
+    controller.config = ReviewConfig(
+        max_challenge_rounds=2,
+        max_document_challenge_dispatches=4,
+    )
     controller.open_sealed_document(BATCH_ID, DOCUMENT_ID)
     _deliver_first_pass(
         controller, "gpt", [_page("page_001", 1, "Alpha"), _page("page_002", 2, "Beta")]
@@ -776,6 +779,15 @@ def test_second_challenge_round_requires_new_evidence(tmp_path: Path) -> None:
         controller.accept(BATCH_ID, DOCUMENT_ID, provider, stage="challenge")
     with pytest.raises(ReviewPolicyError):
         controller.publish(BATCH_ID, DOCUMENT_ID, "gpt", stage="challenge")
+    with pytest.raises(ReviewPolicyError, match="explicit dispute selection"):
+        controller.publish(
+            BATCH_ID,
+            DOCUMENT_ID,
+            "gpt",
+            stage="challenge",
+            evidence="new_crop",
+            evidence_path=tmp_path / "unused.png",
+        )
     with pytest.raises(ReviewPolicyError, match="not a new evidence file"):
         controller.publish(
             BATCH_ID,
@@ -783,6 +795,7 @@ def test_second_challenge_round_requires_new_evidence(tmp_path: Path) -> None:
             "gpt",
             stage="challenge",
             evidence="new_crop",
+            selected_dispute_ids=dispute_ids,
         )
     page_png = (
         document_root(controller.reviews_dir, BATCH_ID, DOCUMENT_ID)
@@ -797,6 +810,7 @@ def test_second_challenge_round_requires_new_evidence(tmp_path: Path) -> None:
             stage="challenge",
             evidence="different_source_scan",
             evidence_path=page_png,
+            selected_dispute_ids=dispute_ids,
         )
     evidence = tmp_path / "other-scan.png"
     evidence.write_bytes(_png(8, 8))
@@ -807,6 +821,7 @@ def test_second_challenge_round_requires_new_evidence(tmp_path: Path) -> None:
         stage="challenge",
         evidence="new_crop",
         evidence_path=evidence,
+        selected_dispute_ids=dispute_ids,
     )
     assert "challenge_round_02" in second.as_posix()
     stored = next(
