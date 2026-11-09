@@ -14,13 +14,14 @@ Conventions, applied only while rendering a new proposal:
   once, and wraps only the spans that differ: ``and [cannot / canot]
   accept presents.`` Side A is the GPT reading and side B the Grok reading.
   Nothing in that view selects a winner.
-- Shared tokens are whitespace runs and other runs that do not split a
-  diplomatic annotation. ``[deleted: ...]``, ``[cancelled: ...]``,
-  ``[inserted: ...]``, and ``[unclear: ...]`` stay whole, including a
-  nested annotation inside them.
-- The minimized view is refused when it would nest brackets, put ``/``
-  inside an alternative, split an annotation, or show the same words once
-  after they moved. The line then stays ``[reading A / reading B]``.
+- Shared tokens are whitespace runs and balanced ``[...]`` annotations.
+  An annotation stays one token, including a nested annotation inside it,
+  so a minimizer cannot split ``[deleted: ...]`` or ``[biffé : ...]``.
+- A differing span that contains ``/`` , or the same words moved, keeps
+  the whole line as ``[reading A / reading B]``. A differing span that
+  contains brackets stays local and labeled, so the brackets are not the
+  alternative syntax: ``étaient [A: personnellement / B: [biffé : personnellement]] entièrement``.
+  Text that is the same on both sides stays outside that span.
 - A missing side (the empty string) is the display token ``∅``:
   ``[reading / ∅]`` or ``[∅ / reading]``. ``∅`` is not an archival character.
 - A reading that contains a line break uses one labeled block. Line breaks
@@ -56,7 +57,6 @@ from transcription_review_agent.review.spans import note_words_in, words
 MISSING_SIDE = "∅"
 ILLEGIBLE_DISPLAY = "[illegible]"
 _ILLEGIBLE_MARKERS = frozenset({"illegible", "[illegible]"})
-_ANNOTATION_MARKERS = ("[deleted:", "[cancelled:", "[inserted:", "[unclear:")
 _UNSAFE_ALTERNATIVE_CHARS = frozenset("[]/")
 
 
@@ -297,6 +297,9 @@ def _minimize_line_alternatives(left: str, right: str) -> str | None:
         return None
     if _change_is_a_move(spans):
         return None
+    spans = _coalesce_unanchored(spans)
+    if not any(kind == "equal" and _has_word(text) for kind, text, _ in spans):
+        return None
     parts: list[str] = []
     rebuilt_left: list[str] = []
     rebuilt_right: list[str] = []
@@ -306,11 +309,10 @@ def _minimize_line_alternatives(left: str, right: str) -> str | None:
             rebuilt_left.append(left_hunk)
             rebuilt_right.append(left_hunk)
             continue
-        if _alternative_hunk_unsafe(left_hunk, right_hunk):
+        alternative = _format_change(left_hunk, right_hunk)
+        if alternative is None:
             return None
-        parts.append(
-            f"[{_display_side(left_hunk, False)} / {_display_side(right_hunk, False)}]"
-        )
+        parts.append(alternative)
         rebuilt_left.append(left_hunk)
         rebuilt_right.append(right_hunk)
     if "".join(rebuilt_left) != left or "".join(rebuilt_right) != right:
@@ -353,7 +355,15 @@ def _tokenize_line(text: str) -> list[str] | None:
 
 
 def _starts_annotation(text: str, index: int) -> bool:
-    return any(text.startswith(marker, index) for marker in _ANNOTATION_MARKERS)
+    """Any balanced ``[...]`` is one token, not only the English markers.
+
+    French diplomatic marks such as ``[biffé : ...]`` and ``[illisible]``
+    contain spaces. Treating only ``[deleted:`` and its siblings as atoms
+    let those spaces split the mark and then forced the whole line into
+    one alternative.
+    """
+
+    return index < len(text) and text[index] == "["
 
 
 def _annotation_end(text: str, start: int) -> int | None:
@@ -395,10 +405,89 @@ def _changed_spans(
     return spans
 
 
+def _has_word(text: str) -> bool:
+    return any(character.isalnum() for character in text)
+
+
+def _local_substitution(left: str, right: str) -> bool:
+    """A one-word edit or an insertion, not two unrelated names.
+
+    ``cuisine`` and ``cinéma`` stay separate spans. ``Bey`` and ``-`` do
+    not: a comma between them is not evidence they are the same word.
+    """
+
+    if left.strip() == "" or right.strip() == "":
+        return True
+    return (
+        SequenceMatcher(None, left.casefold(), right.casefold(), autojunk=False).ratio()
+        >= 0.45
+    )
+
+
+def _coalesce_unanchored(
+    spans: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """Join dissimilar substitutions that share only spaces or punctuation.
+
+    The names in one line stay one alternative. A similar substitution on
+    either side of a real word stays its own span.
+    """
+
+    merged: list[tuple[str, str, str]] = []
+    index = 0
+    while index < len(spans):
+        kind, left, right = spans[index]
+        bridge = (
+            kind == "equal"
+            and not _has_word(left)
+            and left != ""
+            and bool(merged)
+            and merged[-1][0] == "change"
+            and index + 1 < len(spans)
+            and spans[index + 1][0] == "change"
+        )
+        if bridge and not _local_substitution(merged[-1][1], merged[-1][2]):
+            _, next_left, next_right = spans[index + 1]
+            if not _local_substitution(next_left, next_right):
+                _, previous_left, previous_right = merged[-1]
+                merged[-1] = (
+                    "change",
+                    previous_left + left + next_left,
+                    previous_right + left + next_right,
+                )
+                index += 2
+                continue
+        merged.append((kind, left, right))
+        index += 1
+    return merged
+
+
 def _alternative_hunk_unsafe(left: str, right: str) -> bool:
     """Brackets or a slash inside a span would make ``[A / B]`` ambiguous."""
 
     return any(char in _UNSAFE_ALTERNATIVE_CHARS for char in left + right)
+
+
+def _format_change(left_hunk: str, right_hunk: str) -> str | None:
+    """One differing span, or ``None`` when the whole line is safer.
+
+    A slash inside either side would be another alternative boundary, so
+    the caller keeps ``[line A / line B]``. Brackets are a diplomatic mark.
+    Labeling the sides keeps that mark intact without using the brackets as
+    the alternative syntax, and leaves the rest of the line outside.
+    """
+
+    left_view = _display_side(left_hunk, False)
+    right_view = _display_side(right_hunk, False)
+    if not _alternative_hunk_unsafe(left_hunk, right_hunk):
+        return f"[{left_view} / {right_view}]"
+    if "/" in left_hunk or "/" in right_hunk:
+        return None
+    if "\n" in left_hunk or "\n" in right_hunk:
+        return None
+    if "[A:" in left_hunk + right_hunk or " / B:" in left_hunk + right_hunk:
+        return None
+    return f"[A: {left_view} / B: {right_view}]"
 
 
 def _change_is_a_move(spans: Sequence[tuple[str, str, str]]) -> bool:

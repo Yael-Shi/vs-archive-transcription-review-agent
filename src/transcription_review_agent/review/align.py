@@ -4,8 +4,9 @@ Lines are taken in each provider's region order. Region identifiers and
 region boundaries are labels, not the unit of alignment. A line is used
 at most once. Consecutive lines are joined only when their word sequences
 are the same, which covers a wrap or a split. A one-to-one substitution
-is kept only when the lines are similar enough. Anything weaker stays an
-unaligned span, with both texts retained.
+is kept when the lines are similar enough, or when a shared prefix or
+suffix shows they are the same passage read apart. Anything weaker stays
+an unaligned span, with both texts retained.
 """
 
 from __future__ import annotations
@@ -25,8 +26,15 @@ from transcription_review_agent.review.models import PageTranscription, RegionAl
 MAX_ALIGN_REGIONS = 48
 _MAX_GROUP = 4
 # Word or character similarity required before two unequal lines are paired.
-# Below this the lines stay unaligned instead of being forced together.
+# Below this the lines stay unaligned instead of being forced together,
+# unless a shared edge shows they are one passage (see ``_same_passage``).
 _MATCH_SIMILARITY = 0.62
+# A shared prefix or suffix may pair a weaker line, but only when the lines
+# are still recognizably the same passage. A short function-word edge such
+# as "In 1933, the" does not qualify.
+_EDGE_SIMILARITY = 0.5
+_EDGE_ANCHOR = 3
+_EDGE_TOKEN = 6
 
 _WORD = re.compile(r"\w+", flags=re.UNICODE)
 
@@ -241,9 +249,39 @@ def _group_cost(lefts: list[_Piece], rights: list[_Piece]) -> int | None:
     if len(lefts) != 1 or len(rights) != 1:
         return None
     similarity = _similarity(lefts[0], rights[0])
-    if similarity < _MATCH_SIMILARITY:
+    if not _substitution_allowed(lefts[0], rights[0], similarity):
         return None
     return int(round((1.0 - similarity) * 100)) + 1
+
+
+def _substitution_allowed(left: _Piece, right: _Piece, similarity: float) -> bool:
+    """Pair two lines only when they are one passage, not two omissions.
+
+    Similarity covers an ordinary substitution. A shared prefix or suffix
+    covers the same line when names or bracketed readings pull the score
+    just under that bar. The edge has to contain a real word, and the lines
+    still have to be at least half alike, so a shared short opening on two
+    different sentences stays unaligned.
+    """
+
+    if similarity >= _MATCH_SIMILARITY:
+        return True
+    if similarity < _EDGE_SIMILARITY:
+        return False
+    folded_left = tuple(token.casefold() for token in left.tokens)
+    folded_right = tuple(token.casefold() for token in right.tokens)
+    return _anchored_edge(folded_left, folded_right) or _anchored_edge(
+        tuple(reversed(folded_left)), tuple(reversed(folded_right))
+    )
+
+
+def _anchored_edge(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    run: list[str] = []
+    for first, second in zip(left, right):
+        if first != second:
+            break
+        run.append(first)
+    return len(run) >= _EDGE_ANCHOR and any(len(token) >= _EDGE_TOKEN for token in run)
 
 
 def _similarity(left: _Piece, right: _Piece) -> float:

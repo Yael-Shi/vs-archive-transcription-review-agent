@@ -467,13 +467,16 @@ def test_cancellations_and_insertions_keep_provider_text() -> None:
     left = "united the ⟦ashkenazi⟧ sephardic"
     right = "united the [deleted: [illegible]] sephardic"
     shown = format_unresolved_alternatives(left, right)
-    assert shown == f"[{left} / {right}]"
+    assert shown == (
+        "united the [A: ⟦ashkenazi⟧ / B: [deleted: [illegible]]] sephardic"
+    )
     assert "⟦illegible⟧" not in shown
+    assert "[deleted: [illegible]]" in shown
     gpt = _output(_page(left))
     grok = _output(_page(right), "grok")
     wording = _dispute(DisputeCategory.WORDING, left, right, dispute_id="dsp-word")
     comparison = _comparison(gpt, grok, [wording], [_alignment(left, right)])
-    assert _render(gpt, grok, comparison, []) == f"@@ page_001\n[{left} / {right}]\n"
+    assert _render(gpt, grok, comparison, []) == f"@@ page_001\n{shown}\n"
     shared = "youth and the middle"
     note = _dispute(
         DisputeCategory.CANCELLATION_OR_INSERTION,
@@ -990,7 +993,12 @@ def test_one_sided_notes_already_in_the_line_are_not_repeated() -> None:
     )
     assert egypt_text.count("[Egypt / ∅]") == 0
     assert egypt_text.count(egypt_lines[0][0]) == 1
-    assert f"[{egypt_lines[1][0]} / {egypt_lines[1][1]}]" in egypt_text
+    assert (
+        "Nahum Effendi, [Chief / chief] [Rabbi / Rabi] of"
+        "[A: ∅ / B:  [inserted: all]] Egypt, born in Turkey."
+    ) in egypt_text
+    assert egypt_text.count("born in Turkey.") == 1
+    assert "[inserted: all]" in egypt_text
     assert (
         'England. Up with Egypt. Evacuation, [Evacuation." / Evacuation".]'
         in egypt_text
@@ -1259,27 +1267,43 @@ def test_diplomatic_annotations_are_not_split() -> None:
         "movement. He was supported by the youth [deleted: and], the "
         "middle class, and the poors"
     )
-    assert format_unresolved_alternatives(cancelled, deleted) == _full_line(
-        cancelled, deleted
+    shown = format_unresolved_alternatives(cancelled, deleted)
+    assert shown == (
+        "movement. He was supported by the youth "
+        "[A: [cancelled: and] / B: [deleted: and],] the "
+        "[middle-class, / middle class,] and the [poor. / poors]"
     )
-    assert "[middle-class, / middle class,]" not in format_unresolved_alternatives(
-        cancelled, deleted
-    )
+    assert "[cancelled: and]" in shown
+    assert "[deleted: and]" in shown
+    assert shown != _full_line(cancelled, deleted)
     nested_left = "easy nationalisation for [inserted: Palestine] Jews."
     nested_right = "easy naturalisation for [inserted: [unclear: a fortune?]] Jews."
     nested = format_unresolved_alternatives(nested_left, nested_right)
-    assert nested == _full_line(nested_left, nested_right)
+    assert nested == (
+        "easy [nationalisation / naturalisation] for "
+        "[A: [inserted: Palestine] / B: [inserted: [unclear: a fortune?]]] Jews."
+    )
     assert "a fortune? / Palestine" not in nested
+    assert "[inserted: Palestine]" in nested
+    assert "[inserted: [unclear: a fortune?]]" in nested
     unclear_left = "On World War II, nightly bombing occured in Alexandria."
     unclear_right = "On World War II [unclear: nightly] bombing occured in Alexandria."
     unclear = format_unresolved_alternatives(unclear_left, unclear_right)
-    assert unclear == _full_line(unclear_left, unclear_right)
+    assert unclear == (
+        "On World War [II, / II] [A: nightly / B: [unclear: nightly]] "
+        "bombing occured in Alexandria."
+    )
     assert "[nightly / unclear:" not in unclear
+    assert "[unclear: nightly]" in unclear
     illegible_left = "the late Elie Cohen from [illegible]"
     illegible_right = "the late Eli Cohen from [unclear: Damascus?]"
     illegible = format_unresolved_alternatives(illegible_left, illegible_right)
-    assert illegible == _full_line(illegible_left, illegible_right)
+    assert illegible == (
+        "the late [Elie / Eli] Cohen from [A: [illegible] / B: [unclear: Damascus?]]"
+    )
     assert "[[illegible] /" not in illegible
+    assert "[illegible]" in illegible
+    assert "[unclear: Damascus?]" in illegible
 
 
 def test_unsafe_alignment_keeps_the_full_line() -> None:
@@ -1338,5 +1362,5 @@ def test_provider_unreadable_marker_stays_in_the_diplomatic_text() -> None:
         == "line with [unreadable] in the [margin / note]"
     )
     differing = format_unresolved_alternatives("faint [unreadable]", "faint ink")
-    assert differing == _full_line("faint [unreadable]", "faint ink")
+    assert differing == "faint [A: [unreadable] / B: ink]"
     assert "[[unreadable] /" not in differing
