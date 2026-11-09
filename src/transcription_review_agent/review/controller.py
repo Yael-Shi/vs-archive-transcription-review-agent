@@ -56,13 +56,16 @@ from transcription_review_agent.review.compare import (
     compare_transcriptions,
 )
 from transcription_review_agent.review.config import ReviewConfig, load_review_config
+from transcription_review_agent.review.coordinates import (
+    prepare_first_pass_coordinates,
+)
 from transcription_review_agent.review.crop import (
     assert_crop_contains_target,
     build_crop,
     materialize_crop,
-    page_bbox,
     png_dimensions,
 )
+from transcription_review_agent.review.windows import resolve_dispute_window
 from transcription_review_agent.review.jpegutil import decode_jpeg, jpeg_dimensions
 from transcription_review_agent.review.pngutil import encode_png
 from transcription_review_agent.review.evidence import collect_source_evidence
@@ -98,20 +101,20 @@ from transcription_review_agent.review.models import (
     Dispute,
     DisputeCategory,
     EvidenceKind,
+    FallbackReason,
     EvidenceReference,
     FirstPassOutput,
     Identification,
     ManifestArtifact,
+    MemberFallback,
     ManifestProvider,
     NEW_EVIDENCE_KINDS,
-    PageTranscription,
     ReconciledDecision,
     ResearchOutput,
     ReviewManifest,
     SourceEvidence,
     SourceManifest,
     SourcePageRecord,
-    TextRegion,
     WorkRequest,
     interface_for,
 )
@@ -2115,6 +2118,7 @@ def _prepare_bundle(
                 selection=challenge_selection,
                 layout=layout,
                 challenge_contract=challenge_contract,
+                already_published=challenge_already_published,
             )
         )
     else:
@@ -2179,6 +2183,39 @@ def _grouped_challenge_note() -> str:
     )
 
 
+def _shared_fallback(
+    kind: Literal["TARGETED", "FULL_PAGE_FALLBACK"],
+    members: tuple[Dispute, ...],
+    recorded: list[_ResolvedWindow],
+) -> tuple[FallbackReason | None, tuple[tuple[str, FallbackReason], ...]]:
+    """One crop reason when every member agrees, otherwise each member's own.
+
+    A targeted window has no fallback reason. A full-page window keeps its
+    reason when the members share it. Different reasons stay on the members
+    instead of being replaced by one of them.
+    """
+
+    if kind == "TARGETED":
+        return None, ()
+    reasons = [item[2] for item in recorded]
+    first = reasons[0] if reasons else None
+    if first is not None and all(reason == first for reason in reasons):
+        return first, ()
+    return None, tuple(
+        (member.dispute_id, reason)
+        for member, reason in zip(members, reasons, strict=True)
+        if reason is not None
+    )
+
+
+_ResolvedWindow = tuple[
+    BBox,
+    Literal["TARGETED", "FULL_PAGE_FALLBACK"],
+    FallbackReason | None,
+    tuple[str, ...],
+]
+
+
 @dataclass(frozen=True, slots=True)
 class _CropPlan:
     crop_id: str
@@ -2186,6 +2223,9 @@ class _CropPlan:
     target: BBox
     window_kind: Literal["TARGETED", "FULL_PAGE_FALLBACK"]
     group: ChallengeGroup | None
+    fallback_reason: FallbackReason | None = None
+    coordinate_sources: tuple[str, ...] = ()
+    member_fallbacks: tuple[tuple[str, FallbackReason], ...] = ()
 
 
 def _write_challenge_input(
@@ -2199,8 +2239,14 @@ def _write_challenge_input(
     selection: Sequence[str] | None = None,
     layout: ChallengeLayout = "GROUPED",
     challenge_contract: ChallengeContract | None = None,
+    already_published: bool = False,
 ) -> dict[str, bytes]:
     stage_root = doc_root / stage_dir_name("challenge", round_index)
+    if already_published:
+        # A round published by this or an earlier version keeps the files
+        # already on disk. Regenerating would relabel evidence the provider
+        # was given.
+        return _read_published_challenge_files(stage_root)
     files: dict[str, bytes] = {}
     items: list[AnonymousChallengeItem] = []
     disputes = challengeable_disputes(comparison)
@@ -2212,13 +2258,57 @@ def _write_challenge_input(
                 "selected disputes are not all in the recorded comparison"
             )
     pages = {item.page_id: item for item in document.pages}
+    source_evidence = [
+        item for runtime in document.first_pass for item in runtime.source_evidence
+    ]
+    resolved: dict[str, _ResolvedWindow] = {}
 
     def window_of(
         dispute: Dispute,
     ) -> tuple[BBox, Literal["TARGETED", "FULL_PAGE_FALLBACK"]]:
         page = pages[dispute.page_id]
-        target, kind = _target_window(dispute, gpt, grok, page.width, page.height)
-        return target, kind  # type: ignore[return-value]
+        window = resolve_dispute_window(
+            dispute,
+            gpt,
+            grok,
+            page_width=page.width,
+            page_height=page.height,
+            source_evidence=source_evidence,
+        )
+        resolved[dispute.dispute_id] = (
+            window.target,
+            window.kind,
+            window.fallback_reason,
+            window.coordinate_sources,
+        )
+        return window.target, window.kind
+
+    def plan_for(
+        crop_id: str,
+        members: tuple[Dispute, ...],
+        target: BBox,
+        kind: Literal["TARGETED", "FULL_PAGE_FALLBACK"],
+        group: ChallengeGroup | None,
+    ) -> _CropPlan:
+        recorded = [resolved[item.dispute_id] for item in members]
+        # Grouping already gives these members one target and one kind.
+        # Different full-page reasons do not change that window.
+        reason, member_fallbacks = _shared_fallback(kind, members, recorded)
+        sources: list[str] = []
+        for _target, _kind, _reason, item_sources in recorded:
+            for source in item_sources:
+                if source not in sources:
+                    sources.append(source)
+        return _CropPlan(
+            crop_id,
+            members,
+            target,
+            kind,
+            group,
+            reason,
+            tuple(sources),
+            member_fallbacks,
+        )
 
     plans: list[_CropPlan] = []
     groups: list[ChallengeGroup] = []
@@ -2233,10 +2323,11 @@ def _write_challenge_input(
             )
         by_id = {item.dispute_id: item for item in disputes}
         for group in groups:
+            members = tuple(by_id[dispute_id] for dispute_id in group.dispute_ids)
             plans.append(
-                _CropPlan(
+                plan_for(
                     group.crop_id,
-                    tuple(by_id[dispute_id] for dispute_id in group.dispute_ids),
+                    members,
                     group.target,
                     group.window_kind,
                     group,
@@ -2246,7 +2337,13 @@ def _write_challenge_input(
         for dispute in disputes:
             target, kind = window_of(dispute)
             plans.append(
-                _CropPlan(f"crop_{dispute.dispute_id}", (dispute,), target, kind, None)
+                plan_for(
+                    f"crop_{dispute.dispute_id}",
+                    (dispute,),
+                    target,
+                    kind,
+                    None,
+                )
             )
 
     group_of: dict[str, ChallengeGroup] = {}
@@ -2257,6 +2354,7 @@ def _write_challenge_input(
         original_bytes = (doc_root / "input" / _original_name(page)).read_bytes()
         pixel_bytes = (doc_root / "input" / _pixel_name(page)).read_bytes()
         shared = plan.group is not None and len(plan.members) > 1
+        reuse_page = False
         try:
             crop = build_crop(
                 crop_id=plan.crop_id,
@@ -2281,6 +2379,34 @@ def _write_challenge_input(
                     "derived_png_sha256": page.derived_png_sha256,
                 }
             )
+            if plan.fallback_reason is not None:
+                crop = crop.model_copy(update={"fallback_reason": plan.fallback_reason})
+            if plan.member_fallbacks:
+                crop = crop.model_copy(
+                    update={
+                        "member_fallbacks": [
+                            MemberFallback(
+                                dispute_id=dispute_id,
+                                fallback_reason=reason,
+                            )
+                            for dispute_id, reason in plan.member_fallbacks
+                        ]
+                    }
+                )
+            if plan.coordinate_sources:
+                crop = crop.model_copy(
+                    update={"coordinate_sources": list(plan.coordinate_sources)}
+                )
+            reuse_page = (
+                crop_png == pixel_bytes and plan.window_kind == "FULL_PAGE_FALLBACK"
+            )
+            if reuse_page:
+                crop = crop.model_copy(
+                    update={
+                        "reuses_page_pixels": True,
+                        "image_filename": _pixel_name(page),
+                    }
+                )
             assert_crop_contains_target(crop)
         except ValueError as exc:
             raise ReviewPolicyError(str(exc)) from exc
@@ -2288,10 +2414,13 @@ def _write_challenge_input(
         _write_if_same(
             stage_root / "input" / "crops" / f"{crop.crop_id}.json", crop_json
         )
-        _write_if_same(stage_root / "input" / "crops" / f"{crop.crop_id}.png", crop_png)
+        if not reuse_page:
+            _write_if_same(
+                stage_root / "input" / "crops" / f"{crop.crop_id}.png", crop_png
+            )
+            files[f"input/crops/{crop.crop_id}.png"] = crop_png
         _write_if_same(stage_root / "input" / _original_name(page), original_bytes)
         files[f"input/crops/{crop.crop_id}.json"] = crop_json
-        files[f"input/crops/{crop.crop_id}.png"] = crop_png
         files[f"input/{_original_name(page)}"] = original_bytes
         if _pixel_name(page) != _original_name(page):
             _write_if_same(stage_root / "input" / _pixel_name(page), pixel_bytes)
@@ -2307,7 +2436,7 @@ def _write_challenge_input(
                     dispute_ids=list(plan.group.dispute_ids),
                     crop_id=crop.crop_id,
                     crop_sha256=crop.crop_sha256,
-                    window_kind=plan.group.window_kind,
+                    window_kind=plan.window_kind,
                     evidence_refs=[
                         EvidenceReference(
                             kind="GROUP",
@@ -2315,7 +2444,11 @@ def _write_challenge_input(
                             page_id=plan.group.page_id,
                         ),
                         EvidenceReference(
-                            kind=plan.group.evidence_kind,
+                            kind=(
+                                "CROP"
+                                if plan.window_kind == "TARGETED"
+                                else "FULL_PAGE_FALLBACK"
+                            ),
                             evidence_id=crop.crop_id,
                             page_id=plan.group.page_id,
                         ),
@@ -2409,46 +2542,45 @@ def _target_window(
     grok: FirstPassOutput,
     width: int,
     height: int,
+    source_evidence: Sequence[SourceEvidence] = (),
 ) -> tuple[BBox, str]:
-    boxes: list[BBox] = []
-    pairs = (
-        (gpt, dispute.gpt_region_ids),
-        (grok, dispute.grok_region_ids),
+    """Recorded window for one dispute. Geometry is not inferred from text."""
+
+    window = resolve_dispute_window(
+        dispute,
+        gpt,
+        grok,
+        page_width=width,
+        page_height=height,
+        source_evidence=source_evidence,
     )
-    for output, region_ids in pairs:
-        page = next(item for item in output.pages if item.page_id == dispute.page_id)
-        for region_id in region_ids:
-            region = _region(page, region_id)
-            if region is not None and region.bbox is not None:
-                boxes.append(region.bbox)
-    if not boxes and dispute.region_id is not None:
-        for output in (gpt, grok):
-            page = next(
-                item for item in output.pages if item.page_id == dispute.page_id
-            )
-            region = _region(page, dispute.region_id)
-            if region is not None and region.bbox is not None:
-                boxes.append(region.bbox)
-    if not boxes:
-        return page_bbox(width, height), "FULL_PAGE_FALLBACK"
-    return _union(boxes), "TARGETED"
+    return window.target, window.kind
 
 
-def _region(page: PageTranscription, region_id: str | None) -> TextRegion | None:
-    if region_id is None:
-        return None
-    for region in page.regions:
-        if region.region_id == region_id:
-            return region
-    return None
+def _read_published_challenge_files(stage_root: Path) -> dict[str, bytes]:
+    input_root = stage_root / "input"
+    disputes = input_root / "disputes.json"
+    if not disputes.is_file():
+        raise ReviewIntegrityError("published challenge input is missing")
+    files: dict[str, bytes] = {}
+    for path in sorted(input_root.rglob("*")):
+        if path.is_file():
+            files[path.relative_to(stage_root).as_posix()] = path.read_bytes()
+    return files
 
 
-def _union(boxes: list[BBox]) -> BBox:
-    x = min(box.x for box in boxes)
-    y = min(box.y for box in boxes)
-    right = max(box.x + box.width for box in boxes)
-    bottom = max(box.y + box.height for box in boxes)
-    return BBox(x=x, y=y, width=right - x, height=bottom - y)
+def _crop_pixel_digest(input_root: Path, crop: CropRecord, page: PageAsset) -> str:
+    """Hash the crop PNG, or the page image a fallback reuses."""
+
+    crop_png = input_root / "crops" / f"{crop.crop_id}.png"
+    if crop_png.is_file():
+        return sha256_bytes(crop_png.read_bytes())
+    if crop.reuses_page_pixels is not True:
+        raise ReviewIntegrityError("published challenge crop is incomplete")
+    pixel = input_root / _pixel_name(page)
+    if not pixel.is_file() or crop.image_filename != pixel.name:
+        raise ReviewIntegrityError("published fallback does not name its page image")
+    return sha256_bytes(pixel.read_bytes())
 
 
 def _instructions(
@@ -2641,6 +2773,10 @@ def _parse_provider_file(
             )
     try:
         if stage == "first_pass":
+            payload = prepare_first_pass_coordinates(
+                payload,
+                [(page.page_id, page.width, page.height) for page in document.pages],
+            )
             model: ProviderFile = FirstPassOutput.model_validate(payload)
         elif stage == "challenge":
             model = ChallengeOutput.model_validate(payload)
@@ -2818,8 +2954,7 @@ def _published_challenge_scopes(
                     "published challenge source page is missing or changed"
                 )
             crop_json = input_root / "crops" / f"{group.crop_id}.json"
-            crop_png = input_root / "crops" / f"{group.crop_id}.png"
-            if not crop_json.is_file() or not crop_png.is_file():
+            if not crop_json.is_file():
                 raise ReviewIntegrityError("published challenge crop is incomplete")
             try:
                 crop = CropRecord.model_validate_json(crop_json.read_bytes())
@@ -2827,7 +2962,7 @@ def _published_challenge_scopes(
                 raise ReviewIntegrityError(
                     "published challenge crop is not readable"
                 ) from exc
-            png_digest = sha256_bytes(crop_png.read_bytes())
+            png_digest = _crop_pixel_digest(input_root, crop, page)
             if (
                 crop.crop_id != group.crop_id
                 or crop.page_id != group.page_id
@@ -2869,8 +3004,7 @@ def _published_challenge_scopes(
     else:
         for item in published.disputes:
             crop_json = input_root / "crops" / f"{item.crop_id}.json"
-            crop_png = input_root / "crops" / f"{item.crop_id}.png"
-            if not crop_json.is_file() or not crop_png.is_file():
+            if not crop_json.is_file():
                 raise ReviewIntegrityError("published legacy crop is incomplete")
             try:
                 crop = CropRecord.model_validate_json(crop_json.read_bytes())
@@ -2878,10 +3012,13 @@ def _published_challenge_scopes(
                 raise ReviewIntegrityError(
                     "published legacy crop is not readable"
                 ) from exc
+            page = pages.get(item.page_id)
+            if page is None:
+                raise ReviewIntegrityError("published legacy crop has no source page")
             if (
                 crop.dispute_id != item.dispute_id
                 or crop.page_id != item.page_id
-                or crop.crop_sha256 != sha256_bytes(crop_png.read_bytes())
+                or crop.crop_sha256 != _crop_pixel_digest(input_root, crop, page)
             ):
                 raise ReviewIntegrityError("published legacy crop changed")
             kind = "CROP" if crop.window_kind == "TARGETED" else "FULL_PAGE_FALLBACK"
@@ -2999,7 +3136,14 @@ def _load_output(
     data = path.read_bytes()
     if sha256_bytes(data) != runtime.output_sha256:
         raise ReviewIntegrityError("accepted provider output changed on disk")
-    return FirstPassOutput.model_validate_json(data)
+    loaded = json.loads(data)
+    if not isinstance(loaded, dict):
+        raise ReviewIntegrityError("accepted provider output is not an object")
+    prepared = prepare_first_pass_coordinates(
+        loaded,
+        [(page.page_id, page.width, page.height) for page in document.pages],
+    )
+    return FirstPassOutput.model_validate(prepared)
 
 
 def _load_comparison(

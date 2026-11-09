@@ -260,6 +260,12 @@ class FirstPassOutput(ProviderFileBase):
 
 
 EvidenceKind = Literal["CROP", "GROUP", "FULL_PAGE_FALLBACK"]
+FallbackReason = Literal[
+    "NO_RECORDED_COORDINATES",
+    "INVALID_COORDINATES",
+    "AMBIGUOUS_COORDINATES",
+    "RECORDED_BOX_IS_FULL_PAGE",
+]
 EvidenceAssessment = Literal["SUPPORTS_DECISION", "INSUFFICIENT", "UNREADABLE"]
 ReconciliationClass = Literal["AUTOMATICALLY_SUPPORTED", "UNRESOLVED"]
 ReconciliationBasis = Literal[
@@ -651,6 +657,15 @@ class ComparisonFile(BaseModel):
     grok_provider_interface: Literal["GROK"] = "GROK"
 
 
+class MemberFallback(BaseModel):
+    """Why one dispute in a shared full-page crop had no targeted window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dispute_id: str = Field(min_length=1)
+    fallback_reason: FallbackReason
+
+
 class CropRecord(BaseModel):
     """A window onto existing pixels. Enlargement adds context, not detail."""
 
@@ -672,6 +687,15 @@ class CropRecord(BaseModel):
     represents_new_visual_detail: Literal[False] = False
     pixel_dimensions_unchanged: Literal[True] = True
     window_kind: Literal["TARGETED", "FULL_PAGE_FALLBACK"] = "TARGETED"
+    # Set only for a new full-page fallback. Historical crops omit it.
+    fallback_reason: FallbackReason | None = None
+    # Present when members of one full-page crop do not share one reason.
+    member_fallbacks: list[MemberFallback] | None = Field(default=None, min_length=1)
+    # Recorded geometry that located a targeted crop. Not inferred from text.
+    coordinate_sources: list[str] | None = Field(default=None, min_length=1)
+    # The crop image is the page image already stored beside it.
+    reuses_page_pixels: Literal[True] | None = None
+    image_filename: str | None = None
     source_mime_type: Literal["image/png", "image/jpeg"] = "image/png"
     derived_png_sha256: Sha256 | None = None
     crop_sha256: Sha256 | None = None
@@ -695,14 +719,48 @@ class CropRecord(BaseModel):
             self.dispute_ids
         ):
             raise ValueError("a crop group lists each dispute once")
+        if self.window_kind == "TARGETED" and (
+            self.fallback_reason is not None
+            or self.member_fallbacks is not None
+            or self.reuses_page_pixels is not None
+        ):
+            raise ValueError("a targeted crop is not a full-page fallback")
+        if self.member_fallbacks is not None:
+            if self.window_kind != "FULL_PAGE_FALLBACK":
+                raise ValueError("member fallbacks belong to a full-page crop")
+            member_ids = [item.dispute_id for item in self.member_fallbacks]
+            if len(member_ids) != len(set(member_ids)):
+                raise ValueError("a dispute fallback is listed twice")
+            owners = self.dispute_ids if self.dispute_ids is not None else []
+            if self.dispute_id is not None:
+                owners = [self.dispute_id]
+            if set(member_ids) != set(owners):
+                raise ValueError("member fallbacks must match the crop's disputes")
+        if self.reuses_page_pixels is True:
+            if self.window_kind != "FULL_PAGE_FALLBACK" or self.image_filename is None:
+                raise ValueError("a reused page image is a labeled full-page fallback")
+        if self.image_filename is not None and (
+            "/" in self.image_filename
+            or "\\" in self.image_filename
+            or self.image_filename in {".", ".."}
+        ):
+            raise ValueError("crop image filename must stay inside the task input")
         return self
 
     @model_serializer(mode="wrap")
     def _omit_absent_owner(self, handler):  # type: ignore[no-untyped-def]
-        # Single-dispute crops keep their historical bytes: the group fields
-        # are written only for a crop that a group shares.
+        # Absent optional fields stay off the JSON so an older crop keeps its bytes.
         data = handler(self)
-        for name in ("dispute_id", "group_id", "dispute_ids"):
+        for name in (
+            "dispute_id",
+            "group_id",
+            "dispute_ids",
+            "fallback_reason",
+            "member_fallbacks",
+            "coordinate_sources",
+            "reuses_page_pixels",
+            "image_filename",
+        ):
             if data.get(name) is None:
                 data.pop(name, None)
         return data
