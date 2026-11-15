@@ -210,6 +210,16 @@ Round 1 with no `--dispute-id` selects up to the dispute cap and records that li
 
 The budget is checked before a new task is written and before a new round is opened. One publish is one provider. If the budget cannot cover it, that publish writes nothing and does not open the round. The challenge stage stays open. The operator closes it with `close-challenge`. Crossing a limit does not finalize the review and does not choose a transcription. A historical ledger round that has no selection still means the full substantive set.
 
+## Grok Desktop adapter
+
+`transcription_review_agent.grok_desktop` is not part of `review-next`. It sends one message to a predeclared bot in the isolated profile `Grok Bot Isolated Pilot`, using the inherited Electron pipe from the pilot harness. Local Execution on that profile must stay `never`. The adapter does not open a TCP port, call a model API, change account settings, or delete a bot.
+
+`exchange` takes an agent id, bot name, message, and unique request id. The request id has to appear in the message and is never submitted twice. Success requires one correlated user turn and one assistant reply, with no pending, busy, failed, or streaming flag. Completion is an attributed `finished` state, an observed change from an active turn to a settled one, or two consecutive identical settled observations. A lost result after the submit click is `uncertain`, not a retry. The exchange outcome is stored before the host closes. Cleanup is recorded separately as `closed`, `uncertain`, `failed`, or `unrecorded`. A success whose cleanup is not `closed` is not a clean success. Baseline integrity is stored separately as `intact`, `failed`, or `unrecorded`. An observed baseline failure stays `failed` when owned-process cleanup is `closed`, and a later replay raises that failure instead of returning the stored success. An older record with no `baseline` field loads as `unrecorded`.
+
+A preflight that sees no mounted user turn does not by itself prove the conversation has no earlier history. A virtualized transcript can hide turns that are not currently mounted. The send path is for a new bot whose empty history was verified separately.
+
+`ResourceRegistry.register_owned` is the only way to record an agent-owned resource. A send does not claim a bot that already existed. The record stores provider, resource type, provider id, source-document id, lifecycle state, and ownership evidence. Local states move `ACTIVE` to `RETAINED` only after outputs are verified and a retain reason is set, then to `ELIGIBLE_FOR_CLEANUP` when that reason is cleared. `DELETED` is not reachable from this package.
+
 ## Quality checks
 
 Install the development tools with the project:
@@ -227,7 +237,7 @@ mypy
 pytest
 ```
 
-`ruff check` uses Ruff's default rules and covers every Python file under `src/` and `tests/`. `ruff format --check` uses those same directories, and the unchanged modules listed in `[tool.ruff.format] exclude` are left out of formatting. Pass a directory, not an excluded file path: a file named on the command line is formatted even when it is excluded. `mypy` checks `transcription_review_agent.review` only. It does not ignore errors in that package.
+`ruff check` uses Ruff's default rules and covers every Python file under `src/` and `tests/`. `ruff format --check` uses those same directories, and the unchanged modules listed in `[tool.ruff.format] exclude` are left out of formatting. Pass a directory, not an excluded file path: a file named on the command line is formatted even when it is excluded. `mypy` checks `transcription_review_agent.review` and `transcription_review_agent.grok_desktop`. The desktop adapter is not called by `review-next`.
 
 ## This milestone
 
