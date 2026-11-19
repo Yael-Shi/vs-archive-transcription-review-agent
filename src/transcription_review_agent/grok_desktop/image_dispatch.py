@@ -28,6 +28,10 @@ from transcription_review_agent.grok_desktop.models import (
 from transcription_review_agent.grok_desktop.profile import local_read_path
 from transcription_review_agent.grok_desktop.transcript import validate_request
 from transcription_review_agent.review.desktop_result_intake import _assess
+from transcription_review_agent.review.desktop_dispatch import (
+    identity_values,
+    reply_delivery_prompt,
+)
 from transcription_review_agent.review.document_run import _challenge_problem
 from transcription_review_agent.review.errors import (
     ReviewIntegrityError,
@@ -39,6 +43,7 @@ _MAX_MESSAGE = 2000
 _MAX_ATTACHMENTS = 8
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 _PACKET_NAME = "challenge_packet.txt"
+_FIRST_PASS_PACKET_NAME = "first_pass_packet.txt"
 _ALREADY_SUBMITTED = "batch-000903.1.challenge.r1.grok.a1"
 _FILESYSTEM_FACING = re.compile(
     r"[A-Za-z]:\\|write one json file|write nothing|working directory|"
@@ -210,6 +215,130 @@ def preserve_grok_reply(
     )
 
 
+def plan_grok_first_pass_chat(
+    task_dir: Path,
+    *,
+    packet_dir: Path,
+    transport_request_id: str | None = None,
+) -> GrokImageDispatch:
+    """Deliver one first pass in the chat. The isolated profile has no files.
+
+    The published prompt keeps every review instruction. Only the delivery
+    lines change, and the work request, schema, and example it names are
+    placed in the packet because Grok cannot open them. The sealed page is the
+    attachment.
+    """
+
+    task_dir = task_dir.resolve()
+    request = _work_request(task_dir)
+    if request.provider != "grok" or request.stage != "first_pass":
+        raise ReviewUsageError("grok first-pass chat requires the grok first-pass task")
+    request_id = transport_request_id or _correlation_id(request.task_id)
+    prompt = _contained_file(task_dir, task_dir / "prompt.txt").read_text(
+        encoding="utf-8"
+    )
+    schema = _contained_file(task_dir, task_dir / "output_schema.json")
+    example = _contained_file(task_dir, task_dir / "output_example.json")
+    packet = _first_pass_packet(
+        request_id=request_id,
+        request=request,
+        rules=_chat_first_pass_rules(prompt),
+        schema=_chat_schema(schema.read_text(encoding="utf-8")),
+        example=example.read_text(encoding="utf-8"),
+    )
+    _require_chat_text(packet, "first-pass packet")
+    if _foreign_text(packet):
+        raise ReviewIntegrityError("first-pass packet contains another provider path")
+    message, packet_path, digest = _chat_message(
+        task_dir,
+        packet,
+        request_id,
+        packet_dir,
+        subject="first-pass task",
+        name=_FIRST_PASS_PACKET_NAME,
+        images="page image",
+    )
+    attachments = list(_task_images(task_dir))
+    if not attachments:
+        raise ReviewUsageError("grok image dispatch requires a sealed image")
+    if packet_path is not None:
+        attachments.append(packet_path)
+    return GrokImageDispatch(
+        request_id=request_id,
+        message=message,
+        attachments=tuple(attachments),
+        prompt_attached=False,
+        stage=request.stage,
+        output_name=_output_name(request),
+        packet_attached=packet_path is not None,
+        packet_sha256=digest,
+    )
+
+
+def _chat_first_pass_rules(prompt: str) -> str:
+    text = reply_delivery_prompt(prompt, "first_pass")
+    for old, new in (
+        (
+            "The original page image in this directory is the authoritative source.\n",
+            "The attached page image is the authoritative source.\n",
+        ),
+        (
+            "work_request.json, output_schema.json, and output_example.json are in "
+            "this directory.\n",
+            "The identity values, output schema, and shape template follow in this "
+            "packet.\n",
+        ),
+        ("This task directory does not already contain that transcription.\n", ""),
+        (
+            "Do not add output_relative_path to the JSON object.\n"
+            "That work_request.json value is not a JSON field and it is not a "
+            "second folder.\n",
+            "",
+        ),
+        ("Do not list or open the other provider directory.\n", ""),
+        (
+            "output_example.json shows the JSON shape.",
+            "The shape template in this packet shows the JSON shape.",
+        ),
+    ):
+        if text.count(old) != 1:
+            raise ReviewIntegrityError(
+                "task prompt does not match the desktop dispatch adapter"
+            )
+        text = text.replace(old, new)
+    text = text.replace("work_request.json", "the identity values in this packet")
+    text = text.replace("output_example.json", "the shape template in this packet")
+    return text.replace("output_schema.json", "the output schema in this packet")
+
+
+def _first_pass_packet(
+    *,
+    request_id: str,
+    request: WorkRequest,
+    rules: str,
+    schema: str,
+    example: str,
+) -> str:
+    identity = identity_values(request)
+    return (
+        "Chat reply contract:\n"
+        "Return exactly one JSON object in the chat and no other text.\n"
+        "Do not write a preamble, a progress message, or a Markdown code fence.\n"
+        "Do not read local filesystem paths. Do not run a command. "
+        "Do not write an output file.\n"
+        "The page image is the other attachment. Use that image.\n"
+        f"The request id is {request_id}. Do not change the identity values below.\n"
+        "\nTask rules:\n"
+        f"{rules if rules.endswith(chr(10)) else rules + chr(10)}"
+        "\nIdentity values:\n"
+        f"{json.dumps(identity, indent=2, sort_keys=True)}\n"
+        "\nOutput schema:\n"
+        f"{schema if schema.endswith(chr(10)) else schema + chr(10)}"
+        "\nShape template, not a reading:\n"
+        f"{example if example.endswith(chr(10)) else example + chr(10)}"
+    )
+
+
 def _plan_chat_challenge(
     task_dir: Path,
     request: WorkRequest,
@@ -363,36 +492,43 @@ def _crop_records(task_dir: Path) -> str:
 
 
 def _chat_message(
-    task_dir: Path, packet: str, request_id: str, packet_dir: Path | None
+    task_dir: Path,
+    packet: str,
+    request_id: str,
+    packet_dir: Path | None,
+    *,
+    subject: str = "challenge",
+    name: str = _PACKET_NAME,
+    images: str = "page and crop images",
 ) -> tuple[str, Path | None, str]:
     digest = hashlib.sha256(packet.encode("utf-8")).hexdigest()
     if request_id not in packet:
-        raise ReviewIntegrityError("challenge packet lost its request id")
+        raise ReviewIntegrityError(f"{subject} packet lost its request id")
     if len(packet) <= _MAX_MESSAGE:
         return packet, None, digest
     if packet_dir is None:
         raise ReviewUsageError(
-            "challenge evidence does not fit the composer and no packet directory was given"
+            f"{subject} evidence does not fit the composer and no packet directory was given"
         )
     directory = packet_dir.resolve()
     if directory == task_dir or directory.is_relative_to(task_dir):
         raise ReviewIntegrityError(
-            "challenge packet must not be written into the published task"
+            f"{subject} packet must not be written into the published task"
         )
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / _PACKET_NAME
+    path = directory / name
     _create_exact(path, packet.encode("utf-8"))
     envelope = (
         f"request_id: {request_id}\n"
-        "The complete challenge is the attached file challenge_packet.txt. "
+        f"The complete {subject} is the attached file {name}. "
         f"Its sha256 is {digest} and its length is {len(packet.encode('utf-8'))} bytes. "
         "Read that attached file in full. It has not been shortened.\n"
-        "The other attachments are the sealed page and crop images.\n"
+        f"The other attachments are the sealed {images}.\n"
         "Do not read local filesystem paths, run a command, or write a file.\n"
         "Reply with exactly one JSON object and no other text. "
         "No preamble, progress message, or Markdown code fence.\n"
     )
-    _require_chat_text(envelope, "challenge envelope")
+    _require_chat_text(envelope, f"{subject} envelope")
     if len(envelope) > _MAX_MESSAGE or request_id not in envelope:
         raise ReviewUsageError("grok composer envelope exceeds the message limit")
     return envelope, path, digest
