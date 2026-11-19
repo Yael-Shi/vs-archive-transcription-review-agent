@@ -925,7 +925,9 @@ def test_unknown_child_stop_is_a_real_false_return() -> None:
 def test_review_pipeline_does_not_reference_the_desktop_adapter() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "transcription_review_agent"
     for path in root.rglob("*.py"):
-        if "grok_desktop" in path.parts:
+        # desktop_orchestration is the one composition root that wires the
+        # adapters to the controller. Nothing else may name the adapter.
+        if "grok_desktop" in path.parts or "desktop_orchestration" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
         assert "grok_desktop" not in text

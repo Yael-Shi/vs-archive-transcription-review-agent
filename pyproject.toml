@@ -82,4 +82,5 @@ packages = [
     "transcription_review_agent.review",
     "transcription_review_agent.grok_desktop",
     "transcription_review_agent.codex_desktop",
+    "transcription_review_agent.desktop_orchestration",
 ]

@@ -10,7 +10,8 @@ in place.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -18,17 +19,30 @@ from pydantic import ValidationError
 from transcription_review_agent.bundling.hashing import sha256_bytes
 from transcription_review_agent.bundling.publish import canonical_json
 from transcription_review_agent.review.controller import ReviewController
+from transcription_review_agent.review.desktop_dispatch import (
+    DesktopSender,
+    DispatchRecord,
+    DispatchTask,
+    challenge_evidence_hashes,
+    dispatch_task,
+)
 from transcription_review_agent.review.desktop_execution import (
+    assess_review_dispatch,
     review_dispatch_blocked,
 )
 from transcription_review_agent.review.desktop_e2e import (
     accept_desktop_first_pass,
+    load_registered_work_requests,
     register_desktop_first_pass,
 )
 from transcription_review_agent.review.desktop_file_queue import (
+    load_desktop_file_queue,
     resolve_desktop_queue_root,
 )
-from transcription_review_agent.review.desktop_result_intake import _place_exact
+from transcription_review_agent.review.desktop_result_intake import (
+    _assess,
+    _place_exact,
+)
 from transcription_review_agent.review.errors import (
     ReviewIntegrityError,
     ReviewOutputRejected,
@@ -37,6 +51,7 @@ from transcription_review_agent.review.errors import (
 )
 from transcription_review_agent.review.human_verification_packet import (
     build_human_verification_packet,
+    build_pending_agreement_packet,
     build_pending_review_packet,
 )
 from transcription_review_agent.review.models import ChallengeOutput, WorkRequest
@@ -45,6 +60,7 @@ from transcription_review_agent.review.runtime import (
     ProviderRuntime,
 )
 from transcription_review_agent.review.paths import (
+    archive_document_dir,
     document_root,
     output_filename,
     require_batch_id,
@@ -82,6 +98,7 @@ class DocumentRun:
     notes: dict[str, str]
     archive_transcription_used_as_reading: bool
     execution: tuple[dict[str, object], ...]
+    dispatch: tuple[dict[str, object], ...] = ()
 
 
 def advance_document(
@@ -96,6 +113,7 @@ def advance_document(
     closure_reason: str | None = None,
     finalize: bool = False,
     packet_dir: Path | None = None,
+    senders: Mapping[str, DesktopSender] | None = None,
 ) -> DocumentRun:
     """Accept, compare, publish, and collect using the ledger as it stands.
 
@@ -103,14 +121,51 @@ def advance_document(
     accepted file. Challenge closure and finalization run only when this call
     passes them in explicitly, or when a closure is already on the ledger and
     ``finalize`` is set.
+
+    ``senders`` maps ``gpt`` and ``grok`` to a desktop sender. With senders, a
+    task whose output is still missing is sent once and its reply is installed
+    only when it validates. Without senders nothing is sent and an operator
+    supplies the files.
     """
 
+    log: list[DispatchRecord] = []
+    result = _advance_document(
+        controller,
+        batch_id=batch_id,
+        document_id=document_id,
+        queue_root=queue_root,
+        preservation_dir=preservation_dir,
+        mount_root=mount_root,
+        closure_mode=closure_mode,
+        closure_reason=closure_reason,
+        finalize=finalize,
+        packet_dir=packet_dir,
+        senders=senders or {},
+        log=log,
+    )
+    if not senders:
+        return result
+    return _with_dispatch(result, log, tuple(sorted(senders)))
+
+
+def _advance_document(
+    controller: ReviewController,
+    *,
+    batch_id: str,
+    document_id: int,
+    queue_root: Path | str,
+    preservation_dir: Path,
+    mount_root: Path | None,
+    closure_mode: str | None,
+    closure_reason: str | None,
+    finalize: bool,
+    packet_dir: Path | None,
+    senders: Mapping[str, DesktopSender],
+    log: list[DispatchRecord],
+) -> DocumentRun:
     if (closure_mode is None) != (closure_reason is None):
         raise ReviewUsageError("closure requires both --closure-mode and --reason")
-    raw_before = _queue_result_hashes(
-        queue_root, batch_id, document_id, mount_root, "first_pass"
-    )
-    status = _ensure_first_pass(
+    status = _guarded_first_pass(
         controller,
         batch_id=batch_id,
         document_id=document_id,
@@ -118,15 +173,29 @@ def advance_document(
         preservation_dir=preservation_dir,
         mount_root=mount_root,
     )
-    _require_same_hashes(
-        raw_before,
-        _queue_result_hashes(
-            queue_root, batch_id, document_id, mount_root, "first_pass"
-        ),
+    if senders and not _first_pass_complete(status):
+        if _dispatch_first_pass(
+            controller,
+            batch_id=batch_id,
+            document_id=document_id,
+            queue_root=queue_root,
+            preservation_dir=preservation_dir,
+            mount_root=mount_root,
+            senders=senders,
+            log=log,
+        ):
+            status = _guarded_first_pass(
+                controller,
+                batch_id=batch_id,
+                document_id=document_id,
+                queue_root=queue_root,
+                preservation_dir=preservation_dir,
+                mount_root=mount_root,
+            )
+    raw_before = _queue_result_hashes(
+        queue_root, batch_id, document_id, mount_root, "first_pass"
     )
-    if status.providers.get("gpt") != "SUCCEEDED" or (
-        status.providers.get("grok") != "SUCCEEDED"
-    ):
+    if not _first_pass_complete(status):
         return _finish(
             controller,
             batch_id=batch_id,
@@ -171,6 +240,17 @@ def advance_document(
             queue_root=queue_root,
             mount_root=mount_root,
         )
+        if senders:
+            _dispatch_challenge(
+                controller,
+                batch_id=batch_id,
+                document_id=document_id,
+                queue_root=queue_root,
+                preservation_dir=preservation_dir,
+                mount_root=mount_root,
+                senders=senders,
+                log=log,
+            )
         notes = _intake_challenge(
             controller,
             batch_id=batch_id,
@@ -287,6 +367,14 @@ def advance_document(
                 output_dir=packet_dir,
             )
             pending = str(packet_dir)
+        elif packet_dir is not None and challenge is None and not substantive:
+            build_pending_agreement_packet(
+                controller,
+                batch_id=batch_id,
+                document_id=document_id,
+                output_dir=packet_dir,
+            )
+            pending = str(packet_dir)
         return _finish(
             controller,
             batch_id=batch_id,
@@ -348,6 +436,7 @@ def run_payload(result: DocumentRun) -> dict[str, object]:
         "comparison_sha256": result.comparison_sha256,
         "decisions": list(result.decisions),
         "desktop_tasks": result.desktop_tasks,
+        "dispatch": list(result.dispatch),
         "disputes": list(result.disputes),
         "document_id": result.document_id,
         "execution": list(result.execution),
@@ -396,6 +485,276 @@ def _ensure_first_pass(
         mount_root=mount_root,
     )
     return controller.status(batch_id, document_id)
+
+
+def _guarded_first_pass(
+    controller: ReviewController,
+    *,
+    batch_id: str,
+    document_id: int,
+    queue_root: Path | str,
+    preservation_dir: Path,
+    mount_root: Path | None,
+):
+    """Register and accept, and fail if intake changed a file already present."""
+
+    raw_before = _queue_result_hashes(
+        queue_root, batch_id, document_id, mount_root, "first_pass"
+    )
+    status = _ensure_first_pass(
+        controller,
+        batch_id=batch_id,
+        document_id=document_id,
+        queue_root=queue_root,
+        preservation_dir=preservation_dir,
+        mount_root=mount_root,
+    )
+    _require_same_hashes(
+        raw_before,
+        _queue_result_hashes(
+            queue_root, batch_id, document_id, mount_root, "first_pass"
+        ),
+    )
+    return status
+
+
+def _first_pass_complete(status) -> bool:
+    return all(status.providers.get(provider) == "SUCCEEDED" for provider in _PROVIDERS)
+
+
+def _first_pass_problem(raw: bytes, request: WorkRequest) -> str | None:
+    return _assess(raw, request)[2]
+
+
+def _packet_location(
+    queue_root: Path | str,
+    batch_id: str,
+    document_id: int,
+    provider: str,
+    mount_root: Path | None,
+) -> tuple[Path, str]:
+    """A Windows-visible folder for one provider's long chat packet.
+
+    It sits beside the document folders, never inside a provider task.
+    """
+
+    location = resolve_desktop_queue_root(queue_root, mount_root=mount_root)
+    safe_batch = require_batch_id(batch_id)
+    name = f"document_{document_id}_dispatch_packets"
+    return (
+        location.local_path / safe_batch / name / provider,
+        f"{location.windows_path}\\{safe_batch}\\{name}\\{provider}",
+    )
+
+
+def _archive_text(controller: ReviewController, batch_id: str, document_id: int) -> str:
+    path = (
+        controller.batches_dir
+        / require_batch_id(batch_id)
+        / "documents"
+        / str(document_id)
+        / "transcription"
+        / "transcription.txt"
+    )
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def _dispatch_first_pass(
+    controller: ReviewController,
+    *,
+    batch_id: str,
+    document_id: int,
+    queue_root: Path | str,
+    preservation_dir: Path,
+    mount_root: Path | None,
+    senders: Mapping[str, DesktopSender],
+    log: list[DispatchRecord],
+) -> bool:
+    """Send each waiting first-pass task once. True when a reply was installed."""
+
+    requests = load_registered_work_requests(controller, batch_id, document_id)
+    queue = load_desktop_file_queue(
+        queue_root,
+        archive_document_dir(controller.batches_dir, batch_id, document_id),
+        requests,
+        reviews_dir=controller.reviews_dir,
+        mount_root=mount_root,
+    )
+    status = controller.status(batch_id, document_id)
+    archive = _archive_text(controller, batch_id, document_id)
+    tasks = {"gpt": queue.gpt, "grok": queue.grok}
+    installed = False
+    for request in requests:
+        provider = request.provider
+        sender = senders.get(provider)
+        queue_task = tasks[provider]
+        if (
+            sender is None
+            or status.providers[provider] != "AWAITING_MANUAL_DISPATCH"
+            or queue_task.result_present
+        ):
+            continue
+        if any(item.outcome in _STOPPING for item in log):
+            break
+        other = tasks["grok" if provider == "gpt" else "gpt"]
+        packet_dir, windows_packet = _packet_location(
+            queue_root, batch_id, document_id, provider, mount_root
+        )
+        record = dispatch_task(
+            sender,
+            DispatchTask(
+                request=request,
+                task_dir=queue_task.directory,
+                windows_task_dir=queue_task.windows_directory,
+                output_path=queue_task.result_path,
+                packet_dir=packet_dir,
+                windows_packet_dir=windows_packet,
+                evidence_sha256=(queue_task.sha256,),
+                forbidden_texts=(
+                    str(other.directory),
+                    other.windows_directory,
+                    archive,
+                ),
+            ),
+            preservation_dir=preservation_dir,
+            validate=_first_pass_problem,
+        )
+        log.append(record)
+        installed = installed or record.outcome == "installed"
+    return installed
+
+
+def _dispatch_challenge(
+    controller: ReviewController,
+    *,
+    batch_id: str,
+    document_id: int,
+    queue_root: Path | str,
+    preservation_dir: Path,
+    mount_root: Path | None,
+    senders: Mapping[str, DesktopSender],
+    log: list[DispatchRecord],
+) -> None:
+    """Send each waiting challenge task of the latest round once."""
+
+    _state, document = controller._require_document(batch_id, document_id)
+    if (
+        not document.challenge_rounds
+        or document.challenge_closure is not None
+        or document.finalized
+    ):
+        return
+    challenge = document.challenge_rounds[-1]
+    round_dir, windows_round = _challenge_location(
+        queue_root, batch_id, document_id, challenge.round_index, mount_root
+    )
+    archive = _archive_text(controller, batch_id, document_id)
+    for provider in _PROVIDERS:
+        runtime = next(
+            item for item in challenge.providers if item.provider == provider
+        )
+        sender = senders.get(provider)
+        task_dir = round_dir / provider
+        output = task_dir / "output" / output_filename("challenge", provider)
+        if (
+            sender is None
+            or runtime.status is not ProviderStatus.AWAITING_MANUAL_DISPATCH
+            or output.is_file()
+        ):
+            continue
+        if any(item.outcome in _STOPPING for item in log):
+            break
+        request = WorkRequest.model_validate_json(
+            (task_dir / "work_request.json").read_bytes()
+        )
+        if (
+            request.provider != provider
+            or request.stage != "challenge"
+            or request.round_index != challenge.round_index
+        ):
+            raise ReviewIntegrityError(
+                "mirrored challenge task does not match the ledger round"
+            )
+        other = "grok" if provider == "gpt" else "gpt"
+        packet_dir, windows_packet = _packet_location(
+            queue_root, batch_id, document_id, provider, mount_root
+        )
+        log.append(
+            dispatch_task(
+                sender,
+                DispatchTask(
+                    request=request,
+                    task_dir=task_dir,
+                    windows_task_dir=f"{windows_round}\\{provider}",
+                    output_path=output,
+                    packet_dir=packet_dir,
+                    windows_packet_dir=windows_packet,
+                    evidence_sha256=challenge_evidence_hashes(task_dir),
+                    forbidden_texts=(
+                        str(round_dir / other),
+                        f"{windows_round}\\{other}",
+                        archive,
+                    ),
+                ),
+                preservation_dir=preservation_dir,
+                validate=_challenge_problem,
+            )
+        )
+
+
+_STOPPING = ("blocked", "integrity_blocked")
+_DISPATCH_BLOCKERS = (
+    "integrity_blocked",
+    "blocked",
+    "uncertain",
+    "not_sent",
+    "invalid_reply",
+)
+
+
+def _with_dispatch(
+    result: DocumentRun,
+    log: list[DispatchRecord],
+    providers: tuple[str, ...],
+) -> DocumentRun:
+    """Attach the send log and name a stalled send instead of a manual paste."""
+
+    stage = {
+        "waiting_for_first_pass": "first_pass",
+        "waiting_for_challenge": "challenge",
+    }.get(result.stopped_at)
+    execution = (
+        ()
+        if stage is None
+        else tuple(
+            assess_review_dispatch(provider, stage, automatic=True).to_dict()
+            for provider in providers
+        )
+    )
+    changes: dict[str, object] = {
+        "dispatch": tuple(item.to_dict() for item in log),
+        "execution": execution,
+    }
+    stalled = [
+        item
+        for outcome in _DISPATCH_BLOCKERS
+        for item in log
+        if item.outcome == outcome
+    ]
+    if stage is not None and stalled:
+        first = stalled[0]
+        changes["blocker"] = f"dispatch_{first.outcome}"
+        changes["notes"] = {
+            **result.notes,
+            **{item.provider: item.reason or item.outcome for item in stalled},
+        }
+        changes["operator_instruction"] = (
+            f"{first.provider} {first.stage} send {first.request_id} ended as "
+            f"{first.outcome}. It was not sent again and is not resent "
+            "automatically. Inspect the desktop thread, then decide whether an "
+            "operator-approved new attempt is needed."
+        )
+    return replace(result, **changes)  # type: ignore[arg-type]
 
 
 def _opened(controller: ReviewController, batch_id: str, document_id: int) -> bool:

@@ -59,13 +59,48 @@ class ExecutionAssessment:
         }
 
 
-def assess_review_dispatch(provider: str, stage: str) -> ExecutionAssessment:
-    """Return the dispatch boundary. This call has no side effects."""
+_AUTOMATIC_REASON = {
+    "gpt": (
+        "A Codex Desktop sender is configured for this run. The controller sends "
+        "the task once through the codex-app-tools pipe, preserves the raw reply, "
+        "and installs it only when it validates. This orchestration has not been "
+        "run live. The Codex CLI, SDK, and app-server are not used."
+    ),
+    "grok": (
+        "A Grok Desktop sender is configured for this run. The controller sends "
+        "the task once through the isolated profile, with the sealed page "
+        "attached and the instructions in the chat. Local execution stays never. "
+        "This orchestration has not been run live."
+    ),
+}
+
+
+def assess_review_dispatch(
+    provider: str, stage: str, *, automatic: bool = False
+) -> ExecutionAssessment:
+    """Return the dispatch boundary. This call has no side effects.
+
+    ``automatic`` states that the caller configured a sender for this provider.
+    It does not launch anything and does not show that a live run succeeded.
+    """
 
     if provider not in {"gpt", "grok"}:
         raise ReviewUsageError("provider must be gpt or grok")
     if stage not in {"first_pass", "challenge"}:
         raise ReviewUsageError("desktop dispatch covers first_pass and challenge")
+    if automatic:
+        return ExecutionAssessment(
+            provider=provider,  # type: ignore[arg-type]
+            stage=stage,
+            executable=True,
+            evidence_class="live_test_required",
+            mechanism=(
+                "codex_app_tools_pipe"
+                if provider == "gpt"
+                else "grok_composer_file_input"
+            ),
+            reason=_AUTOMATIC_REASON[provider],
+        )
     if provider == "grok":
         return ExecutionAssessment(
             provider="grok",

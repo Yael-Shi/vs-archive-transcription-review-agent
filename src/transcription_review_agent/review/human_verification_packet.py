@@ -25,7 +25,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from transcription_review_agent.bundling.hashing import sha256_bytes, sha256_text
 from transcription_review_agent.bundling.publish import canonical_json
 from transcription_review_agent.constants import SHA256_PATTERN
-from transcription_review_agent.review.controller import ReviewController
+from transcription_review_agent.review.controller import (
+    ReviewController,
+    _load_comparison,
+    _load_output,
+)
 from transcription_review_agent.review.errors import (
     ReviewError,
     ReviewIntegrityError,
@@ -56,6 +60,7 @@ from transcription_review_agent.review.learning_export import (
     PageRef,
     export_learning_candidates,
 )
+from transcription_review_agent.review.runtime import PageAsset
 from transcription_review_agent.review.models import (
     DISPUTE_PRIORITY,
     BBox,
@@ -887,6 +892,192 @@ def build_pending_review_packet(
         {"index.html": html_text.encode("utf-8"), relative: data},
     )
     return output_dir / "index.html"
+
+
+def build_pending_agreement_packet(
+    controller: ReviewController,
+    *,
+    batch_id: str,
+    document_id: int,
+    output_dir: Path,
+) -> Path:
+    """Write a review page for an open document with no substantive dispute.
+
+    The sealed page and both first-pass readings are shown with the
+    comparison result. No challenge or reconciliation exists for such a
+    document and none is created. This does not finalize, publish, record
+    human verification, or approve a reading. The ledger is not written.
+    """
+
+    _state, document = controller._require_document(batch_id, document_id)
+    if document.finalized or document.challenge_closure is not None:
+        raise ReviewUsageError("a pending review page is only for an open document")
+    if document.challenge_rounds:
+        raise ReviewUsageError("this document has a challenge; use the reconciled page")
+    if not document.pages:
+        raise ReviewIntegrityError("pending review has no sealed page")
+    doc_root = document_root(controller.reviews_dir, batch_id, document_id)
+    comparison = _load_comparison(doc_root, document)
+    if comparison is None:
+        raise ReviewUsageError("pending review requires a recorded comparison")
+    if any(item.substantive for item in comparison.disputes):
+        raise ReviewUsageError("a substantive dispute needs a challenge first")
+    outputs = {
+        provider: _load_output(doc_root, document, provider)
+        for provider in ("gpt", "grok")
+    }
+    gpt, grok = outputs["gpt"], outputs["grok"]
+    if gpt is None or grok is None:
+        raise ReviewUsageError("pending review requires both first-pass readings")
+    pages = _verified_pages(doc_root, document.pages)
+    expected_ids = [item.page_id for item in document.pages]
+    readings: dict[str, dict[str, str]] = {}
+    for provider, output in (("gpt", gpt), ("grok", grok)):
+        found = [item.page_id for item in output.pages]
+        if found != expected_ids:
+            raise ReviewIntegrityError(
+                f"{provider} readings do not cover the sealed pages in order"
+            )
+        readings[provider] = {
+            item.page_id: item.diplomatic_transcription for item in output.pages
+        }
+    html_text = _pending_agreement_html(
+        batch_id=batch_id,
+        document_id=document_id,
+        pages=[
+            _AgreementPage(
+                page_id=page.page_id,
+                name=page.original_filename,
+                sha256=page.sha256,
+                width=page.width,
+                height=page.height,
+                image_relative=relative,
+                gpt=readings["gpt"][page.page_id],
+                grok=readings["grok"][page.page_id],
+            )
+            for page, relative, _data in pages
+        ],
+        differences=[
+            (
+                item.dispute_id,
+                item.page_id,
+                item.category.value,
+                item.gpt_text,
+                item.grok_text,
+            )
+            for item in comparison.disputes
+        ],
+    )
+    files = {"index.html": html_text.encode("utf-8")}
+    for _page, relative, data in pages:
+        files[relative] = data
+    _publish_named_files(output_dir, files)
+    return output_dir / "index.html"
+
+
+def _verified_pages(
+    doc_root: Path, assets: Sequence[PageAsset]
+) -> list[tuple[PageAsset, str, bytes]]:
+    """Read every sealed page image and check it against its recorded hash.
+
+    A missing image, an unnamed page, a hash mismatch, or a repeated page id
+    stops the packet. No page is ever left out of the page.
+    """
+
+    if len({item.page_id for item in assets}) != len(assets):
+        raise ReviewIntegrityError("sealed pages repeat a page id")
+    verified: list[tuple[PageAsset, str, bytes]] = []
+    for page in assets:
+        if not page.original_filename:
+            raise ReviewIntegrityError(f"sealed page {page.page_id} has no image name")
+        source = contained(doc_root, doc_root / "input" / page.original_filename)
+        try:
+            data = source.read_bytes()
+        except OSError as exc:
+            raise ReviewIntegrityError(
+                f"sealed page image {page.page_id} is missing"
+            ) from exc
+        if sha256_bytes(data) != page.sha256:
+            raise ReviewIntegrityError(
+                f"sealed page {page.page_id} does not match the review record"
+            )
+        suffix = source.suffix.lower() or ".png"
+        name = f"page{suffix}" if len(assets) == 1 else f"{page.page_id}{suffix}"
+        verified.append((page, name, data))
+    if len({name for _page, name, _data in verified}) != len(verified):
+        raise ReviewIntegrityError("sealed pages collide in the packet")
+    return verified
+
+
+@dataclass(frozen=True, slots=True)
+class _AgreementPage:
+    page_id: str
+    name: str
+    sha256: str
+    width: int
+    height: int
+    image_relative: str
+    gpt: str
+    grok: str
+
+
+def _pending_agreement_html(
+    *,
+    batch_id: str,
+    document_id: int,
+    pages: Sequence[_AgreementPage],
+    differences: Sequence[tuple[str, str, str, str, str]],
+) -> str:
+    if differences:
+        agreement = (
+            f"The comparison recorded {len(differences)} non-substantive "
+            "difference(s). The readings are not identical. No challenge was needed."
+        )
+    else:
+        agreement = (
+            "The comparison recorded no difference. The two first-pass readings agree."
+        )
+
+    def section(item: _AgreementPage) -> str:
+        return (
+            f"<section class='page-block' id='{_esc(item.page_id)}'>"
+            f"<p class='kicker'>{_esc(item.page_id)} · {_esc(item.name)} · "
+            f"{item.width}×{item.height} · SHA-256 {_esc(item.sha256)}</p>"
+            "<div class='viewport'><div class='sheet'>"
+            f"<img class='page' src='{_esc(item.image_relative)}' "
+            f"width='{item.width}' height='{item.height}' "
+            f"alt='Sealed source page {_esc(item.page_id)}. Pending human review.'>"
+            "</div></div>"
+            "<div class='readings'>"
+            f"<div><h3>GPT · {_esc(item.page_id)}</h3><pre>{_esc(item.gpt)}</pre></div>"
+            f"<div><h3>Grok · {_esc(item.page_id)}</h3><pre>{_esc(item.grok)}</pre></div>"
+            "</div></section>"
+        )
+
+    listed = "".join(
+        f"<li>{_esc(dispute_id)} on {_esc(page_id)} ({_esc(category)}): "
+        f"GPT {_esc(gpt)} / Grok {_esc(grok)}</li>"
+        for dispute_id, page_id, category, gpt, grok in differences
+    )
+    return (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        f"<title>Pending review {_esc(batch_id)}</title><style>{_STYLE}</style></head><body>"
+        f"<main><p class='kicker'>Batch {_esc(batch_id)} · document {document_id} · "
+        f"{len(pages)} page(s)</p>"
+        "<article class='case active'>"
+        "<p class='banner'>Pending human review. No reading is approved.</p>"
+        f"<p>Agreement status: {_esc(agreement)}</p>"
+        "<p>No human verification or approval has occurred. "
+        "Agreement is not human verification. "
+        "Human verification is not recorded. "
+        "No challenge or reconciliation was run for this document. "
+        "This page does not approve a reading and the reading is not "
+        "eligible for publication.</p>"
+        + (f"<ul>{listed}</ul>" if listed else "")
+        + "</article>"
+        + "".join(section(item) for item in pages)
+        + "</main></body></html>"
+    )
 
 
 def _provider_reading(

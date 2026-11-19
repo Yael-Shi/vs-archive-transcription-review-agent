@@ -193,7 +193,9 @@ class GrokDesktopAdapter:
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def live_adapter(paths: DesktopPaths) -> GrokDesktopAdapter:
+def live_adapter(
+    paths: DesktopPaths, *, poll_timeout: float = 90.0
+) -> GrokDesktopAdapter:
     """Open the isolated profile. Does nothing until ``exchange`` is called."""
 
     def check_profile() -> None:
@@ -221,6 +223,7 @@ def live_adapter(paths: DesktopPaths) -> GrokDesktopAdapter:
         diagnostics_dir=paths.diagnostics_dir,
         open_session=open_session,
         check_profile=check_profile,
+        poll_timeout=poll_timeout,
     )
 
 
