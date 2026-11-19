@@ -28,6 +28,7 @@ class ExchangeRequest:
     message: str
     request_id: str
     source_document_id: str | None = None
+    attachments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

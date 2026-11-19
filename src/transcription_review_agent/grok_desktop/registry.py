@@ -22,6 +22,7 @@ from transcription_review_agent.grok_desktop.models import (
     ExchangeResult,
     ExchangeStatus,
 )
+from transcription_review_agent.grok_desktop.profile import local_read_path
 
 
 class RegistryError(Exception):
@@ -104,12 +105,17 @@ class StoredAttempt:
 def request_fingerprint(request: ExchangeRequest) -> str:
     """Identity of one send. The request id is stored beside this, not inside it."""
 
-    body = {
+    body: dict[str, object] = {
         "agent_id": request.agent_id,
         "bot_name": " ".join(request.bot_name.split()),
         "message": request.message,
         "source_document_id": request.source_document_id,
     }
+    if request.attachments:
+        body["attachments"] = [
+            hashlib.sha256(local_read_path(Path(path)).read_bytes()).hexdigest()
+            for path in request.attachments
+        ]
     encoded = json.dumps(
         body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )

@@ -19,9 +19,11 @@ from transcription_review_agent.grok_desktop.profile import (
 )
 from transcription_review_agent.grok_desktop.registry import ResourceRegistry
 from transcription_review_agent.grok_desktop.session import (
+    AttachmentPreflight,
     Clock,
     CdpSession,
     SteadyClock,
+    run_attachment_preflight,
     run_exchange,
 )
 from transcription_review_agent.grok_desktop.transcript import validate_request
@@ -69,6 +71,24 @@ class GrokDesktopAdapter:
         self._check_profile = check_profile
         self._clock = clock or SteadyClock()
         self._poll_timeout = poll_timeout
+
+    def attachment_preflight(
+        self, paths: tuple[str, ...], *, agent_id: str, bot_name: str
+    ) -> AttachmentPreflight:
+        """Open the isolated app, set the composer files, and do not submit.
+
+        The caller has to authorize the launch. This does not reserve a
+        request id and does not insert a message.
+        """
+
+        self._check_profile()
+        session = self._open_session()
+        try:
+            return run_attachment_preflight(
+                session, paths, agent_id=agent_id, bot_name=bot_name
+            )
+        finally:
+            session.close()
 
     def exchange(self, request: ExchangeRequest) -> ExchangeResult:
         self._check_profile()

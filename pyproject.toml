@@ -72,9 +72,14 @@ exclude = [
 
 [tool.setuptools.package-data]
 "transcription_review_agent.grok_desktop" = ["assets/*.ps1"]
+"transcription_review_agent.codex_desktop" = ["assets/*.ps1"]
 
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src"
 explicit_package_bases = true
-packages = ["transcription_review_agent.review", "transcription_review_agent.grok_desktop"]
+packages = [
+    "transcription_review_agent.review",
+    "transcription_review_agent.grok_desktop",
+    "transcription_review_agent.codex_desktop",
+]

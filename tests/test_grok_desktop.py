@@ -48,6 +48,7 @@ from transcription_review_agent.grok_desktop.transcript import (
     PREVIEW_CHARS,
     classify_preflight,
     completion_phase,
+    judge_turn,
     poll_expression,
     preflight_expression,
     structural_message_text,
@@ -1206,6 +1207,25 @@ def test_streaming_pause_and_changing_prose_do_not_complete() -> None:
     assert growing.reason == "timeout_after_send"
 
 
+def test_activity_line_keeps_a_stable_reply_running() -> None:
+    phase, refusal = judge_turn(
+        {
+            "attribution": "turn",
+            "activeAgent": AGENT,
+            "states": ["reading"],
+            "streaming": False,
+            "pending": False,
+            "failed": False,
+            "busy": False,
+            "replyStructure": "prose",
+            "reply": "On it. Checking the files.",
+        },
+        AGENT,
+    )
+    assert phase == "running"
+    assert refusal == ""
+
+
 def test_turn_settles_only_after_active_generation_or_a_second_settled_poll() -> None:
     transition = run_exchange(
         FakeSession(
@@ -1361,6 +1381,9 @@ function matches(el, selector) {
   if (selector === ".sand-transcript-row") return el.classList.contains("sand-transcript-row");
   if (selector === ".sand-message-prose") return el.classList.contains("sand-message-prose");
   if (selector === "[data-grok-state]") return el.hasAttribute("data-grok-state");
+  if (selector === "[data-grok-state], [data-activity]") {
+    return el.hasAttribute("data-grok-state") || el.hasAttribute("data-activity");
+  }
   if (selector === ".sand-message[data-role]") {
     return el.classList.contains("sand-message") && el.hasAttribute("data-role");
   }
@@ -1393,6 +1416,13 @@ function taggedUser() {
   return row("user").append(message);
 }
 function assistantRow() { return row(null).append(assistantMessage()); }
+function activityLine() {
+  const el = createElement("div");
+  el.className = "sand-message sand-activity-line";
+  el.setAttribute("data-role", "assistant");
+  el.setAttribute("data-activity", "reading");
+  return row(null).append(el);
+}
 function inset() {
   const el = createElement("div");
   el.className = "sand-virtual-transcript__inset sand-10l6tqk";
@@ -1434,6 +1464,7 @@ const results = {
   next_user_row: run([taggedUser(), assistantRow(), laterUser]),
   missing_assistant: run([taggedUser(), inset()]),
   virtualized_assistant: run([hidden]),
+  activity_while_prose: run([taggedUser(), assistantRow(), activityLine(), inset()]),
 };
 process.stdout.write(JSON.stringify(results));
 """
@@ -1481,6 +1512,11 @@ def test_virtual_transcript_inset_bounds_only_a_trailing_rendered_list() -> None
     assert virtualized["attribution"] == "virtualized"
     assert virtualized["reply"] == ""
     assert virtualized["userHits"] == 0
+    active = results["activity_while_prose"]
+    assert active["attribution"] == "turn"
+    assert active["reply"] == REQUEST_ID
+    assert active["streaming"] is False
+    assert "reading" in active["states"]
 
 
 def test_unrelated_streaming_and_wrong_bot_states_do_not_complete() -> None:
