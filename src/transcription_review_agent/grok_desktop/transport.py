@@ -398,6 +398,21 @@ class PowershellCdpSession:
                 raise TimeoutError("cdp insert")
             raise TransportError(str(payload.get("error") or "insert failed"))
 
+    def set_input_files(self, selector: str, files: tuple[str, ...]) -> None:
+        """Ask the host to set one composer file input. This does not submit."""
+
+        if selector != "input.sand-prompt-file-input":
+            raise TransportError("attachment_selector_rejected")
+        if not files or len(files) > 8:
+            raise TransportError("attachment_path_rejected")
+        payload = self._request(
+            {"op": "setFiles", "selector": selector, "files": list(files)}
+        )
+        if payload.get("ok") is not True:
+            if payload.get("error") == "timeout":
+                raise TimeoutError("cdp setFiles")
+            raise TransportError(str(payload.get("error") or "attachment_unconfirmed"))
+
     def _fail_startup(
         self, exc: TransportError, *, cause: BaseException | None = None
     ) -> NoReturn:

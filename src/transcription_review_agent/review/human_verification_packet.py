@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from transcription_review_agent.bundling.hashing import sha256_bytes, sha256_text
 from transcription_review_agent.bundling.publish import canonical_json
 from transcription_review_agent.constants import SHA256_PATTERN
+from transcription_review_agent.review.controller import ReviewController
 from transcription_review_agent.review.errors import (
     ReviewError,
     ReviewIntegrityError,
@@ -60,8 +61,13 @@ from transcription_review_agent.review.models import (
     BBox,
     CropRecord,
     DisputeCategory,
+    ReconciledDecision,
 )
-from transcription_review_agent.review.paths import contained, reviews_root
+from transcription_review_agent.review.paths import (
+    contained,
+    document_root,
+    reviews_root,
+)
 
 PACKET_SCHEMA: Final = "human-verification-packet-v1"
 PHASE1_DOCUMENT_IDS: tuple[int, ...] = (104, 105, 108)
@@ -834,6 +840,245 @@ def select_phase1_queue(
     return selected
 
 
+def build_pending_review_packet(
+    controller: ReviewController,
+    *,
+    batch_id: str,
+    document_id: int,
+    output_dir: Path,
+) -> Path:
+    """Write a review page for a reconciled document that is still open.
+
+    This copies the sealed page and the recorded challenge decisions. It does
+    not close the dispute, finalize the document, or approve a reading.
+    """
+
+    _state, document = controller._require_document(batch_id, document_id)
+    if document.finalized or document.challenge_closure is not None:
+        raise ReviewUsageError(
+            "a pending review page is only for an open reconciled document"
+        )
+    challenge = document.challenge_rounds[-1] if document.challenge_rounds else None
+    if challenge is None or not challenge.reconciled:
+        raise ReviewUsageError("pending review requires a reconciled challenge")
+    if not document.reconciled_decisions:
+        raise ReviewUsageError("pending review has no reconciled decision")
+    if not document.pages:
+        raise ReviewIntegrityError("pending review has no sealed page")
+    page = document.pages[0]
+    doc_root = document_root(controller.reviews_dir, batch_id, document_id)
+    source = contained(doc_root, doc_root / "input" / page.original_filename)
+    data = source.read_bytes()
+    if sha256_bytes(data) != page.sha256:
+        raise ReviewIntegrityError("sealed page bytes do not match the review record")
+    relative = f"page{source.suffix.lower() or '.png'}"
+    html_text = _pending_review_html(
+        batch_id=batch_id,
+        document_id=document_id,
+        page_name=page.original_filename,
+        page_sha=page.sha256,
+        width=page.width,
+        height=page.height,
+        image_relative=relative,
+        decisions=document.reconciled_decisions,
+    )
+    _publish_named_files(
+        output_dir,
+        {"index.html": html_text.encode("utf-8"), relative: data},
+    )
+    return output_dir / "index.html"
+
+
+def _provider_reading(
+    item: ReconciledDecision, provider: Literal["gpt", "grok"]
+) -> str:
+    """The reading that provider's own decision selects.
+
+    Candidate X and Y stay available separately. An unresolved or other
+    decision does not borrow either candidate. Nothing here is human approval.
+    """
+
+    decision = item.gpt_decision if provider == "gpt" else item.grok_decision
+    third = item.gpt_third_reading if provider == "gpt" else item.grok_third_reading
+    if decision == "CANDIDATE_X":
+        recorded = item.candidate_x_text
+    elif decision == "CANDIDATE_Y":
+        recorded = item.candidate_y_text
+    elif decision == "THIRD_READING":
+        recorded = third
+    else:
+        recorded = None
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    return "No selected reading"
+
+
+def _pending_status(item: ReconciledDecision) -> str:
+    """Separate agreement, reconciliation, verification, and approval."""
+
+    agreement = "Providers agreed." if item.agreed else "Providers did not agree."
+    result = item.result_class or "not classified"
+    basis = item.basis or "not recorded"
+    selected = item.selected_reading or "none"
+    return (
+        f"{agreement} Reconciliation status {item.decision}. "
+        f"Result class {result}. Basis {basis}. "
+        f"Model-selected reading: {selected}. "
+        "Agreement is not human verification. "
+        "Human verification is not recorded. "
+        "This page does not approve a reading and the reading is not "
+        "eligible for publication."
+    )
+
+
+def _publish_named_files(output_dir: Path, files: dict[str, bytes]) -> None:
+    """Write a pending page by staging, then replacing only those file names.
+
+    A new directory appears in one rename. An existing directory is updated
+    only when every entry, including a hidden file or a symlink, is one of
+    the names being written and is not a link. A failed update puts the
+    previous bytes back. If that restoration fails, the backup directory
+    is left in place.
+    """
+
+    if not files or any(_unsafe_packet_name(name) for name in files):
+        raise ReviewPathError("pending review file name is not one segment")
+    parent = output_dir.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".pending-review-", dir=parent))
+    backup: Path | None = None
+    backed_up: list[str] = []
+    installed: list[str] = []
+    try:
+        for name, data in files.items():
+            _write_bytes(staging / name, data)
+        if output_dir.is_symlink():
+            raise ReviewPathError(
+                "refusing to replace a pending review path that is a link"
+            )
+        if not output_dir.exists():
+            os.replace(staging, output_dir)
+            return
+        if not output_dir.is_dir():
+            raise ReviewPathError("pending review output is not a directory")
+        _require_exact_packet_names(output_dir, files)
+        backup = Path(tempfile.mkdtemp(prefix=".pending-review-backup-", dir=parent))
+        for name in files:
+            current = output_dir / name
+            if current.is_symlink() or current.exists():
+                os.replace(current, backup / name)
+                backed_up.append(name)
+        for name in files:
+            os.replace(staging / name, output_dir / name)
+            installed.append(name)
+    except Exception as exc:
+        restored = True
+        if backup is not None:
+            restored = _restore_named_files(
+                output_dir, backup, installed=installed, backed_up=backed_up
+            )
+        shutil.rmtree(staging, ignore_errors=True)
+        if backup is not None and restored:
+            shutil.rmtree(backup, ignore_errors=True)
+        if not restored:
+            raise ReviewPathError(
+                f"pending review rollback failed; backup kept at {backup}"
+            ) from exc
+        raise
+    shutil.rmtree(staging, ignore_errors=True)
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+
+
+def _require_exact_packet_names(output_dir: Path, files: Mapping[str, bytes]) -> None:
+    for path in output_dir.iterdir():
+        if path.is_symlink() or path.name not in files:
+            raise ReviewPathError("pending review directory has an unexpected file")
+
+
+def _restore_named_files(
+    output_dir: Path,
+    backup: Path,
+    *,
+    installed: Sequence[str],
+    backed_up: Sequence[str],
+) -> bool:
+    """Put the previous packet back. False means the backup must be kept."""
+
+    restored = True
+    saved = set(backed_up)
+    for name in list(installed) + [name for name in backed_up if name not in installed]:
+        dest = output_dir / name
+        previous = backup / name
+        try:
+            if dest.is_symlink() or dest.exists():
+                dest.unlink()
+            if name in saved and (previous.exists() or previous.is_symlink()):
+                os.replace(previous, dest)
+        except OSError:
+            restored = False
+    return restored
+
+
+def _unsafe_packet_name(name: str) -> bool:
+    return (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or name.startswith(".")
+    )
+
+
+def _pending_review_html(
+    *,
+    batch_id: str,
+    document_id: int,
+    page_name: str,
+    page_sha: str,
+    width: int,
+    height: int,
+    image_relative: str,
+    decisions: Sequence[ReconciledDecision],
+) -> str:
+    sections = []
+    for item in decisions:
+        sections.append(
+            "<article class='case active'>"
+            "<p class='banner'>Pending human review. No reading is approved.</p>"
+            f"<p>Dispute {_esc(item.dispute_id)}. Status {_esc(item.decision)}. "
+            "This page does not close the dispute.</p>"
+            f"<p>{_esc(_pending_status(item))}</p>"
+            "<div class='readings'>"
+            "<div><h3>GPT</h3>"
+            f"<p>{_esc(item.gpt_decision or '')}</p>"
+            f"<p>{_esc(_provider_reading(item, 'gpt'))}</p>"
+            f"<p>{_esc(item.gpt_visual_evidence or '')}</p></div>"
+            "<div><h3>Grok</h3>"
+            f"<p>{_esc(item.grok_decision or '')}</p>"
+            f"<p>{_esc(_provider_reading(item, 'grok'))}</p>"
+            f"<p>{_esc(item.grok_visual_evidence or '')}</p></div>"
+            "</div>"
+            f"<p>Candidate X: {_esc(item.candidate_x_text or '')}</p>"
+            f"<p>Candidate Y: {_esc(item.candidate_y_text or '')}</p>"
+            "</article>"
+        )
+    return (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        f"<title>Pending review {_esc(batch_id)}</title><style>{_STYLE}</style></head><body>"
+        f"<main><p class='kicker'>Batch {_esc(batch_id)} · document {document_id} · "
+        f"{_esc(page_name)} · {width}×{height}</p>"
+        f"<p class='kicker'>Page SHA-256 {_esc(page_sha)}</p>"
+        + "".join(sections)
+        + "<div class='viewport'><div class='sheet'>"
+        + (
+            f"<img class='page' src='{_esc(image_relative)}' width='{width}' height='{height}' "
+            "alt='Sealed source page. Pending human review.'>"
+        )
+        + "</div></div></main></body></html>"
+    )
+
+
 def build_human_verification_packet(
     review_dirs: Sequence[Path],
     *,
@@ -1333,7 +1578,20 @@ def _publish(
         for digest, source in page_files.items():
             _copy_hashed(source, staging / image_paths[digest], digest)
         for digest, located in crop_files.items():
-            _copy_hashed(located.path, staging / crop_paths[digest], digest)
+            destination = staging / crop_paths[digest]
+            # The sealed page can also be the only crop. Both copies name
+            # the same hash, so the page file already satisfies the crop.
+            if destination.exists():
+                if sha256_bytes(destination.read_bytes()) != digest:
+                    raise ReviewIntegrityError(
+                        "page and crop paths collide with different bytes"
+                    )
+                if sha256_bytes(located.path.read_bytes()) != digest:
+                    raise ReviewIntegrityError(
+                        "image hash changed before the packet was written"
+                    )
+                continue
+            _copy_hashed(located.path, destination, digest)
         if localization is not None:
             _write_bytes(
                 staging / "localization.json",

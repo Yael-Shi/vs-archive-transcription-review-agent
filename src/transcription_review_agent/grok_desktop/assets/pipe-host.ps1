@@ -286,6 +286,72 @@ try {
       $response = Wait-CdpId $cdpId 30
       if (-not $response) { Write-Protocol ((@{ id = $commandId; ok = $false; error = 'timeout' } | ConvertTo-Json -Compress)); continue }
       Write-Protocol ((@{ id = $commandId; ok = $true } | ConvertTo-Json -Compress))
+    } elseif ($op -eq 'setFiles') {
+      $selector = [string]$cmd.selector
+      if ($selector -ne 'input.sand-prompt-file-input') {
+        Write-Protocol ((@{ id = $commandId; ok = $false; error = 'attachment_selector_rejected' } | ConvertTo-Json -Compress))
+        continue
+      }
+      $incoming = @()
+      if ($null -eq $cmd.files) { $incoming = @() }
+      elseif ($cmd.files -is [string]) { $incoming = @([string]$cmd.files) }
+      else { $incoming = @($cmd.files) }
+      $clean = New-Object System.Collections.Generic.List[string]
+      $bad = $false
+      foreach ($file in $incoming) {
+        $path = [string]$file
+        if ($path -notmatch '^[A-Za-z]:\\[^<>:"|?*\r\n]+$') { $bad = $true; break }
+        $ext = [IO.Path]::GetExtension($path).ToLowerInvariant()
+        if (@('.png', '.jpg', '.jpeg', '.txt') -notcontains $ext) { $bad = $true; break }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $bad = $true; break }
+        $clean.Add($path)
+      }
+      if ($bad -or $clean.Count -lt 1 -or $clean.Count -gt 8) {
+        Write-Protocol ((@{ id = $commandId; ok = $false; error = 'attachment_path_rejected' } | ConvertTo-Json -Compress))
+        continue
+      }
+      Drain-Idle
+      $script:nextId += 1
+      $docId = $script:nextId
+      $doc = @{ id = $docId; sessionId = $script:sid; method = 'DOM.getDocument'; params = @{ depth = 0 } }
+      Send-Cdp $writer ($doc | ConvertTo-Json -Compress -Depth 6)
+      $docResponse = Wait-CdpId $docId 30
+      $root = $null
+      if ($docResponse -and $docResponse.result.root) { $root = $docResponse.result.root.nodeId }
+      if (-not $root) {
+        Write-Protocol ((@{ id = $commandId; ok = $false; error = 'attachment_document_missing' } | ConvertTo-Json -Compress))
+        continue
+      }
+      Drain-Idle
+      $script:nextId += 1
+      $queryId = $script:nextId
+      $query = @{ id = $queryId; sessionId = $script:sid; method = 'DOM.querySelector'; params = @{ nodeId = $root; selector = $selector } }
+      Send-Cdp $writer ($query | ConvertTo-Json -Compress -Depth 6)
+      $queryResponse = Wait-CdpId $queryId 30
+      $nodeId = $null
+      if ($queryResponse -and $queryResponse.result) { $nodeId = $queryResponse.result.nodeId }
+      if (-not $nodeId) {
+        Write-Protocol ((@{ id = $commandId; ok = $false; error = 'attachment_input_missing' } | ConvertTo-Json -Compress))
+        continue
+      }
+      Drain-Idle
+      $script:nextId += 1
+      $setId = $script:nextId
+      $names = @()
+      foreach ($path in $clean) { $names += ($path | ConvertTo-Json -Compress) }
+      $filesJson = '[' + ($names -join ',') + ']'
+      $raw = '{"id":' + $setId + ',"sessionId":"' + $script:sid + '","method":"DOM.setFileInputFiles","params":{"nodeId":' + $nodeId + ',"files":' + $filesJson + '}}'
+      Send-Cdp $writer $raw
+      $setResponse = Wait-CdpId $setId 30
+      if (-not $setResponse) {
+        Write-Protocol ((@{ id = $commandId; ok = $false; error = 'timeout' } | ConvertTo-Json -Compress))
+        continue
+      }
+      if ($setResponse.error) {
+        Write-Protocol ((@{ id = $commandId; ok = $false; error = 'attachment_unconfirmed' } | ConvertTo-Json -Compress))
+        continue
+      }
+      Write-Protocol ((@{ id = $commandId; ok = $true; count = $clean.Count } | ConvertTo-Json -Compress))
     } else {
       Write-Protocol ((@{ id = $commandId; ok = $false; error = 'unknown op' } | ConvertTo-Json -Compress))
     }

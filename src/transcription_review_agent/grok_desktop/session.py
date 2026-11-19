@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from transcription_review_agent.grok_desktop.models import (
@@ -15,6 +16,9 @@ from transcription_review_agent.grok_desktop.transcript import (
     PREVIEW_CHARS,
     as_list,
     classify_preflight,
+    FILE_INPUT_SELECTOR,
+    composer_files_expression,
+    file_input_census_expression,
     focus_expression,
     greeting_view,
     judge_turn,
@@ -31,6 +35,8 @@ class CdpSession(Protocol):
 
     def insert_text(self, text: str) -> None: ...
 
+    def set_input_files(self, selector: str, files: tuple[str, ...]) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -46,6 +52,12 @@ class SteadyClock:
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
+
+
+# Local staging returns after the change event, so the chip can lag the CDP
+# result. The wait stays short and a missing label is still a refusal.
+ATTACHMENT_READY_TIMEOUT_SECONDS = 3.0
+ATTACHMENT_READY_INTERVAL_SECONDS = 0.2
 
 
 def run_exchange(
@@ -88,6 +100,10 @@ def run_exchange(
         confirm_refusal = classify_preflight(confirm)
         if confirm_refusal:
             return _finish(ExchangeStatus.ERROR, False, request, reason=confirm_refusal)
+        if request.attachments:
+            attached, _observed = _attach_files(session, request.attachments, clock)
+            if attached is not None:
+                return _finish(ExchangeStatus.ERROR, False, request, reason=attached)
         if (
             not isinstance(preflight, dict)
             or not isinstance(confirm, dict)
@@ -273,6 +289,141 @@ def run_exchange(
                 states_seen=tuple(seen),
             )
         raise
+
+
+@dataclass(frozen=True)
+class AttachmentPreflight:
+    """Composer file check. ``submitted`` stays false: nothing is sent."""
+
+    ready: bool
+    submitted: bool
+    reason: str
+    files: tuple[str, ...]
+    chips: tuple[str, ...]
+    labels: tuple[str, ...] = ()
+
+
+def run_attachment_preflight(
+    session: CdpSession,
+    paths: tuple[str, ...],
+    *,
+    agent_id: str,
+    bot_name: str,
+    clock: Clock | None = None,
+) -> AttachmentPreflight:
+    """Select the declared bot, place files, and read the chip. Do not submit."""
+
+    if not paths:
+        return AttachmentPreflight(False, False, "no_attachments", (), ())
+    selected = session.evaluate(select_expression(agent_id))
+    if not isinstance(selected, dict) or selected.get("ok") is not True:
+        reason = "bot_missing"
+        if isinstance(selected, dict) and selected.get("reason"):
+            reason = str(selected["reason"])
+        return AttachmentPreflight(False, False, reason, (), ())
+    identity = session.evaluate(preflight_expression(agent_id, bot_name, "PREFLIGHT00"))
+    if not isinstance(identity, dict) or identity.get("nameMatch") is not True:
+        return AttachmentPreflight(False, False, "wrong_bot", (), ())
+    if identity.get("composerEmpty") is not True:
+        return AttachmentPreflight(False, False, "unexpected_draft", (), ())
+    if identity.get("streaming") is True or identity.get("pending") is True:
+        return AttachmentPreflight(False, False, "not_idle", (), ())
+    refusal, observed = _attach_files(session, paths, clock or SteadyClock())
+    files, chips, labels = _composer_snapshot(observed)
+    return AttachmentPreflight(
+        ready=refusal is None,
+        submitted=False,
+        reason=refusal or "",
+        files=files,
+        chips=chips,
+        labels=labels,
+    )
+
+
+def _attach_files(
+    session: CdpSession, paths: tuple[str, ...], clock: Clock
+) -> tuple[str | None, dict[str, Any]]:
+    """Return a refusal until every chip label is the requested filename.
+
+    The composer must have no chip and no selected file before assignment.
+    An existing attachment is not removed. ``DOM.setFileInputFiles`` then
+    dispatches the input's change event, and the composer clears
+    ``input.value``, so an empty file list afterward is expected. Acceptance
+    is the staged chip's ``aria-label``, which the app sets to the original
+    ``File.name``. Empty text is not acceptance.
+    """
+
+    census = session.evaluate(file_input_census_expression())
+    if (
+        not isinstance(census, dict)
+        or census.get("ok") is not True
+        or census.get("count") != 1
+        or census.get("multiple") is not True
+        or census.get("disabled") is True
+    ):
+        return "attachment_input_missing", {}
+    baseline = session.evaluate(composer_files_expression())
+    if not isinstance(baseline, dict) or baseline.get("ok") is not True:
+        return "attachment_composer_unreadable", {}
+    if not _composer_clear(baseline):
+        return "attachment_already_present", baseline
+    try:
+        session.set_input_files(FILE_INPUT_SELECTOR, paths)
+    except Exception:
+        return "attachment_unconfirmed", {}
+    names = [_basename(path) for path in paths]
+    deadline = clock.now() + ATTACHMENT_READY_TIMEOUT_SECONDS
+    observed: dict[str, Any] = {}
+    while True:
+        current = session.evaluate(composer_files_expression())
+        if isinstance(current, dict):
+            observed = current
+            labels = as_list(current.get("labels"))
+            if current.get("ok") is True and _labels_match(labels, names):
+                return None, observed
+        if clock.now() >= deadline:
+            return "attachment_not_in_composer", observed
+        clock.sleep(ATTACHMENT_READY_INTERVAL_SECONDS)
+
+
+def _basename(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _composer_clear(observed: dict[str, Any]) -> bool:
+    """True only when no chip exists and the file input has no selection.
+
+    An existing chip is left in place. This check does not remove it.
+    """
+
+    return not (
+        as_list(observed.get("files"))
+        or as_list(observed.get("chips"))
+        or as_list(observed.get("labels"))
+    )
+
+
+def _labels_match(labels: list[str], names: list[str]) -> bool:
+    """Require one exact chip label per requested filename and no extras."""
+
+    if any(not name for name in names) or len(labels) != len(names):
+        return False
+    remaining = list(labels)
+    for name in names:
+        if name not in remaining:
+            return False
+        remaining.remove(name)
+    return not remaining
+
+
+def _composer_snapshot(
+    observed: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(as_list(observed.get("files"))),
+        tuple(as_list(observed.get("chips"))),
+        tuple(as_list(observed.get("labels"))),
+    )
 
 
 def _timeout(

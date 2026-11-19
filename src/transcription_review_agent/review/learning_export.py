@@ -915,7 +915,10 @@ def _crops(doc_root: Path, source: SourceManifest) -> dict[str, CropRecord]:
             )
         if crop.crop_sha256 is not None:
             image_name = crop.image_filename or f"{crop.crop_id}.png"
-            _require_file_hash(path.parent / image_name, crop.crop_sha256, image_name)
+            image_path = path.parent / image_name
+            if not image_path.is_file() and crop.reuses_page_pixels is True:
+                image_path = doc_root / "input" / image_name
+            _require_file_hash(image_path, crop.crop_sha256, image_name)
         if crop.crop_id in found and found[crop.crop_id] != crop:
             raise ReviewIntegrityError("two challenge crops share an id and differ")
         found[crop.crop_id] = crop

@@ -42,6 +42,7 @@ _ACTIVITY = frozenset(
 _RUNNING = _ACTIVITY
 _KNOWN_STATES = _RUNNING | {"failed", "blocked", "finished", "idle"}
 _MAX_MESSAGE = 2000
+FILE_INPUT_SELECTOR = "input.sand-prompt-file-input"
 _CHROME_CLASSES = frozenset(
     {
         "sand-activity-mark",
@@ -184,11 +185,12 @@ def judge_turn(poll: dict[str, Any], agent_id: str) -> tuple[str, str]:
 def _turn_settled(poll: dict[str, Any]) -> bool:
     """True when this turn's renderer signals show generation has ended.
 
-    ``streaming`` is the assistant message ``aria-label`` that Grok 1.0.1
-    sets only while ``isStreaming`` is true. ``pending`` and ``busy`` are
-    the row send flags (``data-pending`` / ``aria-busy``), not generation.
-    An in-range activity mark, including ``idle``, means the turn is not
-    settled. Missing flags are not treated as false.
+    ``streaming`` is an ``aria-label`` on the assistant message. The
+    installed renderer omits that label only for finished non-empty prose.
+    ``pending`` and ``busy`` are the row send flags (``data-pending`` /
+    ``aria-busy``), not generation. An in-range activity mark, including
+    ``idle`` or a ``data-activity`` line such as ``reading``, means the turn
+    is not settled. Missing flags are not treated as false.
     """
 
     if poll.get("replyStructure") != "prose":
@@ -487,6 +489,43 @@ def greeting_view(value: dict[str, Any]) -> tuple[object, ...]:
     )
 
 
+def file_input_census_expression() -> str:
+    """Read the composer file input. This expression does not choose a file."""
+
+    selector = json.dumps(FILE_INPUT_SELECTOR)
+    return (
+        "(() => { /* grok-desktop:file-input */"
+        f" const nodes = Array.from(document.querySelectorAll({selector}));"
+        " if (nodes.length !== 1) return {ok:false, count: nodes.length};"
+        " const input = nodes[0];"
+        " return {ok:true, count: 1, multiple: input.multiple === true,"
+        " accept: String(input.getAttribute('accept') || ''),"
+        " disabled: input.disabled === true}; })()"
+    )
+
+
+def composer_files_expression() -> str:
+    """Read the file input and each composer chip's accessible name.
+
+    The installed composer copies the chosen files and then clears the input,
+    so ``input.files`` is not acceptance. An image chip keeps the remembered
+    filename in ``aria-label`` and can have empty text.
+    """
+
+    selector = json.dumps(FILE_INPUT_SELECTOR)
+    return (
+        "(() => { /* grok-desktop:composer-files */"
+        f" const input = document.querySelector({selector});"
+        " if (!input) return {ok:false, reason:'file-input-missing'};"
+        " const files = input.files ? Array.from(input.files).map(file => file.name) : [];"
+        " const nodes = Array.from(document.querySelectorAll('.sand-prompt-attachment'));"
+        " const chips = nodes.map(node => String(node.textContent || '').replace(/\\s+/g, ' ').trim());"
+        " const labels = nodes.map(node => String(node.getAttribute('aria-label') || '')"
+        ".replace(/\\s+/g, ' ').trim());"
+        " return {ok:true, fileCount: files.length, files: files, chips: chips, labels: labels}; })()"
+    )
+
+
 def select_expression(agent_id: str) -> str:
     quoted = json.dumps(agent_id)
     return (
@@ -595,7 +634,13 @@ def poll_expression(agent_id: str, request_id: str) -> str:
         " if (user.length > 1) attribution = 'ambiguous';"
         " else if (user.length === 1) attribution = 'turn';"
         " else if (rowHit) attribution = 'virtualized';"
-        " const all = Array.from(document.querySelectorAll('[data-grok-state]'));"
+        " const all = Array.from(document.querySelectorAll('[data-grok-state], [data-activity]'));"
+        " const stateValues = (el) => { const values = [];"
+        " const grok = el.getAttribute('data-grok-state');"
+        " const activity = el.getAttribute('data-activity');"
+        " if (grok) values.push(grok);"
+        " if (activity && activity !== grok) values.push(activity);"
+        " return values; };"
         " const chrome = (el) => !el || el.nodeType !== 1 ? false : ("
         " el.hasAttribute('data-activity') || el.hasAttribute('data-grok-state') || el.hasAttribute('data-typing')"
         " || el.classList.contains('sand-activity-mark') || el.classList.contains('sand-activity-line')"
@@ -668,8 +713,8 @@ def poll_expression(agent_id: str, request_id: str) -> str:
         " pending = rows.some(node => node.hasAttribute('data-pending'));"
         " failed = rows.some(node => node.hasAttribute('data-failed'));"
         " busy = rows.some(node => node.getAttribute('aria-busy') === 'true');"
-        " states = all.filter(inside).map(el => el.getAttribute('data-grok-state')).filter(Boolean).slice(0, 8);"
-        " unrelated = all.filter(el => !inside(el)).map(el => el.getAttribute('data-grok-state')).filter(Boolean).slice(0, 8);"
+        " states = all.filter(inside).flatMap(stateValues).slice(0, 8);"
+        " unrelated = all.filter(el => !inside(el)).flatMap(stateValues).slice(0, 8);"
         " const assistants = msgs.filter(el => inside(el) && el.getAttribute('data-role') === 'assistant'"
         " && !el.hasAttribute('data-grok-state') && !el.classList.contains('sand-activity-line')"
         " && !el.classList.contains('sand-activity-mark') && !el.hasAttribute('data-activity'));"
@@ -682,7 +727,7 @@ def poll_expression(agent_id: str, request_id: str) -> str:
         " if (full == null) replyStructure = 'inconclusive';"
         " else { replyChars = full.length; replyStructure = 'prose';"
         " if (full.length > limit) truncated = true; else reply = full; } } } }"
-        " else unrelated = all.map(el => el.getAttribute('data-grok-state')).filter(Boolean).slice(0, 8);"
+        " else unrelated = all.flatMap(stateValues).slice(0, 8);"
         " return {userHits: user.length, activeAgent: activeAgent, agentMatch: activeAgent === agentId,"
         " attribution: attribution, replyStructure: replyStructure,"
         " states: states, unrelatedStates: unrelated, reply: reply, truncated: truncated,"

@@ -21,6 +21,7 @@ from transcription_review_agent.review.errors import (
     ReviewPathError,
 )
 from transcription_review_agent.review.jpegutil import jpeg_to_png
+from transcription_review_agent.review.models import FirstPassOutput
 from transcription_review_agent.review.provider_output_contract import (
     TEMPLATE_PAGE_TEXT,
 )
@@ -194,6 +195,31 @@ def test_provider_directories_keep_the_sealed_image_and_contract(
     assert published.gpt.windows_directory not in published.grok.prompt_path.read_text(
         encoding="utf-8"
     )
+
+
+def test_prompt_requires_the_example_shape_without_output_relative_path(
+    tmp_path: Path,
+) -> None:
+    published, _sealed = _publish(tmp_path, _png())
+    for task in (published.gpt, published.grok):
+        prompt = task.prompt_path.read_text(encoding="utf-8")
+        assert "Copy output_relative_path" not in prompt
+        assert "Do not add output_relative_path to the JSON object." in prompt
+        assert task.windows_output_file in prompt
+        example = json.loads(
+            task.directory.joinpath("output_example.json").read_text(encoding="utf-8")
+        )
+        schema = json.loads(
+            task.directory.joinpath("output_schema.json").read_text(encoding="utf-8")
+        )
+        assert "output_relative_path" not in example
+        assert "output_relative_path" not in schema["top_level_fields"]
+        parsed = FirstPassOutput.model_validate(example)
+        assert parsed.provider == task.provider
+        with pytest.raises(ValueError):
+            FirstPassOutput.model_validate(
+                {**example, "output_relative_path": "first_pass/output/file.json"}
+            )
 
 
 def test_second_publish_reuses_tasks_and_preserves_a_result(tmp_path: Path) -> None:

@@ -23,7 +23,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--bot-name", required=True)
     parser.add_argument("--request-id", required=True)
-    parser.add_argument("--message", required=True)
+    parser.add_argument("--message")
+    parser.add_argument("--image", action="append", default=[])
+    parser.add_argument(
+        "--preflight-attachment",
+        action="store_true",
+        help="Set composer files and exit before any message is inserted.",
+    )
     parser.add_argument("--source-document-id")
     parser.add_argument("--registry", type=Path, required=True)
     parser.add_argument("--diagnostics", type=Path, required=True)
@@ -35,6 +41,19 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get("GROK_ISO_CONFIRM") != "1":
         print("launch not confirmed", file=sys.stderr)
         return 2
+    if args.preflight_attachment:
+        if os.environ.get("GROK_ATTACH_PREFLIGHT") != "1":
+            print("attachment preflight not authorized", file=sys.stderr)
+            return 2
+        if not args.image:
+            print("attachment preflight requires --image", file=sys.stderr)
+            return 2
+    elif args.image and os.environ.get("GROK_IMAGE_SUBMIT") != "1":
+        print("image submit not authorized", file=sys.stderr)
+        return 2
+    elif not args.message:
+        print("message is required", file=sys.stderr)
+        return 2
     adapter = live_adapter(
         DesktopPaths(
             profile_dir=args.profile,
@@ -45,6 +64,26 @@ def main(argv: list[str] | None = None) -> int:
             log_path=args.log,
         )
     )
+    if args.preflight_attachment:
+        preflight = adapter.attachment_preflight(
+            tuple(args.image),
+            agent_id=args.agent_id,
+            bot_name=args.bot_name,
+        )
+        print(
+            json.dumps(
+                {
+                    "ready": preflight.ready,
+                    "submitted": preflight.submitted,
+                    "reason": preflight.reason,
+                    "files": list(preflight.files),
+                    "chips": list(preflight.chips),
+                    "labels": list(preflight.labels),
+                },
+                indent=2,
+            )
+        )
+        return 0 if preflight.ready and preflight.submitted is False else 1
     result = adapter.exchange(
         ExchangeRequest(
             agent_id=args.agent_id,
@@ -52,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             message=args.message,
             request_id=args.request_id,
             source_document_id=args.source_document_id,
+            attachments=tuple(args.image),
         )
     )
     print(json.dumps(result.to_public_dict(), indent=2))

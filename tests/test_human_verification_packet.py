@@ -1048,3 +1048,232 @@ def test_packet_validation_precedes_temp_cleanup(tmp_path: Path) -> None:
     assert not abandoned.exists()
     assert sidecar.read_text(encoding="utf-8") == "human export\n"
     assert b"REBUILT" in (output / "index.html").read_bytes()
+
+
+def test_pending_status_names_the_recorded_decision() -> None:
+    from transcription_review_agent.review.human_verification_packet import (
+        _pending_status,
+    )
+    from transcription_review_agent.review.models import ReconciledDecision
+
+    unresolved = ReconciledDecision(
+        dispute_id="dsp_1",
+        decision="UNRESOLVED",
+        agreed=False,
+        result_class="UNRESOLVED",
+        basis="PROVIDER_DISAGREEMENT",
+    )
+    text = _pending_status(unresolved)
+    assert "Providers did not agree" in text
+    assert "Reconciliation status UNRESOLVED" in text
+    assert "Agreement is not human verification" in text
+    assert "Human verification is not recorded" in text
+    assert "not eligible for publication" in text
+    agreed = unresolved.model_copy(
+        update={
+            "decision": "CANDIDATE_Y",
+            "agreed": True,
+            "result_class": "AUTOMATICALLY_SUPPORTED",
+            "basis": "DUAL_MODEL_VISUAL_SUPPORT",
+            "selected_reading": "BLUE HARBOR",
+        }
+    )
+    agreed_text = _pending_status(agreed)
+    assert "Providers agreed" in agreed_text
+    assert "CANDIDATE_Y" in agreed_text
+    assert "AUTOMATICALLY_SUPPORTED" in agreed_text
+    assert "BLUE HARBOR" in agreed_text
+    assert "UNRESOLVED" not in agreed_text
+
+
+def test_pending_publication_does_not_overwrite_unrelated_files(tmp_path: Path) -> None:
+    from transcription_review_agent.review.human_verification_packet import (
+        _publish_named_files,
+    )
+
+    output = tmp_path / "pending"
+    _publish_named_files(
+        output, {"index.html": b"<html>one</html>", "page.png": b"png"}
+    )
+    assert (output / "index.html").read_bytes() == b"<html>one</html>"
+    (output / "notes.txt").write_text("keep", encoding="utf-8")
+    with pytest.raises(ReviewPathError, match="unexpected file"):
+        _publish_named_files(
+            output, {"index.html": b"<html>two</html>", "page.png": b"png"}
+        )
+    assert (output / "index.html").read_bytes() == b"<html>one</html>"
+    assert (output / "notes.txt").read_text(encoding="utf-8") == "keep"
+    (output / "notes.txt").unlink()
+    _publish_named_files(
+        output, {"index.html": b"<html>two</html>", "page.png": b"png2"}
+    )
+    assert (output / "index.html").read_bytes() == b"<html>two</html>"
+    assert (output / "page.png").read_bytes() == b"png2"
+    (output / ".hidden").write_bytes(b"secret")
+    with pytest.raises(ReviewPathError, match="unexpected file"):
+        _publish_named_files(
+            output, {"index.html": b"<html>three</html>", "page.png": b"png3"}
+        )
+    assert (output / "index.html").read_bytes() == b"<html>two</html>"
+    assert (output / ".hidden").read_bytes() == b"secret"
+    (output / ".hidden").unlink()
+    (output / "page.png").unlink()
+    (output / "page.png").symlink_to(output / "index.html")
+    with pytest.raises(ReviewPathError, match="unexpected file"):
+        _publish_named_files(
+            output, {"index.html": b"<html>four</html>", "page.png": b"png4"}
+        )
+    assert (output / "index.html").read_bytes() == b"<html>two</html>"
+    assert (output / "page.png").is_symlink()
+
+
+def test_pending_rollback_restores_the_first_replaced_file(tmp_path: Path) -> None:
+    import transcription_review_agent.review.human_verification_packet as packet
+
+    output = tmp_path / "pending"
+    packet._publish_named_files(
+        output, {"index.html": b"<html>old</html>", "page.png": b"png-old"}
+    )
+    before = {
+        path.name: path.read_bytes()
+        for path in output.iterdir()
+        if not path.is_symlink()
+    }
+    real_replace = packet.os.replace
+    installed = {"count": 0}
+
+    def fail_after_first(src: Path, dst: Path) -> None:
+        if Path(dst).parent == output and Path(src).parent != output:
+            installed["count"] += 1
+            if installed["count"] == 2:
+                raise OSError("injected after the first replacement")
+        real_replace(src, dst)
+
+    packet.os.replace = fail_after_first  # type: ignore[method-assign]
+    try:
+        with pytest.raises(OSError, match="injected"):
+            packet._publish_named_files(
+                output, {"index.html": b"<html>new</html>", "page.png": b"png-new"}
+            )
+    finally:
+        packet.os.replace = real_replace  # type: ignore[method-assign]
+    after = {
+        path.name: path.read_bytes()
+        for path in output.iterdir()
+        if not path.is_symlink()
+    }
+    assert after == before
+    assert list(output.parent.glob(".pending-review-backup-*")) == []
+
+
+def test_pending_page_uses_each_providers_decision() -> None:
+    from transcription_review_agent.review.human_verification_packet import (
+        _pending_review_html,
+    )
+    from transcription_review_agent.review.models import ReconciledDecision
+
+    def page(decision: ReconciledDecision) -> str:
+        return _pending_review_html(
+            batch_id="batch-000903",
+            document_id=1,
+            page_name="page_001.png",
+            page_sha="a" * 64,
+            width=8,
+            height=8,
+            image_relative="page.png",
+            decisions=(decision,),
+        )
+
+    base = ReconciledDecision(
+        dispute_id="dsp_1",
+        decision="UNRESOLVED",
+        agreed=False,
+        candidate_x_text="CANDIDATE X TEXT",
+        candidate_y_text="CANDIDATE Y TEXT",
+        gpt_third_reading="GPT THIRD",
+        grok_third_reading="GROK THIRD",
+        gpt_visual_evidence="gpt evidence",
+        grok_visual_evidence="grok evidence",
+    )
+    swapped = page(
+        base.model_copy(
+            update={"gpt_decision": "CANDIDATE_Y", "grok_decision": "CANDIDATE_X"}
+        )
+    )
+    assert "CANDIDATE Y TEXT" in swapped
+    assert "CANDIDATE X TEXT" in swapped
+    gpt_at = swapped.index("<h3>GPT</h3>")
+    grok_at = swapped.index("<h3>Grok</h3>")
+    assert swapped.index("CANDIDATE Y TEXT") < grok_at
+    assert gpt_at < swapped.index("CANDIDATE Y TEXT") < grok_at
+    assert swapped.index("CANDIDATE X TEXT", grok_at) > grok_at
+    thirds = page(
+        base.model_copy(
+            update={
+                "gpt_decision": "THIRD_READING",
+                "grok_decision": "THIRD_READING",
+            }
+        )
+    )
+    assert "GPT THIRD" in thirds
+    assert "GROK THIRD" in thirds
+    unresolved = page(
+        base.model_copy(update={"gpt_decision": "UNRESOLVED", "grok_decision": None})
+    )
+    assert unresolved.count("No selected reading") == 2
+    assert "CANDIDATE X TEXT" in unresolved
+    assert "CANDIDATE Y TEXT" in unresolved
+    assert "No reading is approved" in unresolved
+    assert "approved a reading" not in unresolved.lower()
+
+
+def test_page_and_crop_with_the_same_hash_publish_once(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from transcription_review_agent.review.human_verification_packet import (
+        PacketManifest,
+        _publish,
+    )
+
+    image = tmp_path / "page.png"
+    image.write_bytes(b"\x89PNG-same-page-and-crop")
+    digest = sha256_bytes(image.read_bytes())
+    relative = f"images/{digest}.png"
+    manifest = PacketManifest(
+        document_ids=[1],
+        case_count=0,
+        band_0_count=0,
+        band_1_count=0,
+        export_sha256="a" * 64,
+        limitations=[],
+        cases=[],
+        images=[],
+    )
+    output = tmp_path / "packet"
+    _publish(
+        output,
+        "<html></html>",
+        manifest,
+        {digest: image},
+        {digest: relative},
+        {digest: SimpleNamespace(path=image)},
+        {digest: relative},
+    )
+    copied = output / relative
+    assert copied.is_file()
+    assert sha256_bytes(copied.read_bytes()) == digest
+    assert [path.name for path in (output / "images").iterdir()] == [copied.name]
+
+    other = tmp_path / "other.png"
+    other.write_bytes(b"different-bytes")
+    other_digest = sha256_bytes(other.read_bytes())
+    with pytest.raises(ReviewIntegrityError, match="collide"):
+        _publish(
+            tmp_path / "collision",
+            "<html></html>",
+            manifest,
+            {digest: image},
+            {digest: relative},
+            {other_digest: SimpleNamespace(path=other)},
+            {other_digest: relative},
+        )
